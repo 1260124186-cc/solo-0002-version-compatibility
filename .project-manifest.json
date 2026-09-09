@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "name": "solo-0002-version-compatibility",
+  "project_shape": "backend",
+  "modules": [
+    {
+      "id": "semver",
+      "path": "internal/semver",
+      "responsibility": "稳定语义版本与约束"
+    },
+    {
+      "id": "domain",
+      "path": "internal/domain",
+      "responsibility": "实体及边界"
+    },
+    {
+      "id": "repository",
+      "path": "internal/repository",
+      "responsibility": "并发与持久化"
+    },
+    {
+      "id": "resolution",
+      "path": "internal/resolution",
+      "responsibility": "依赖求解"
+    },
+    {
+      "id": "service",
+      "path": "internal/service",
+      "responsibility": "工作流编排"
+    },
+    {
+      "id": "httpapi",
+      "path": "internal/httpapi",
+      "responsibility": "HTTP 入口"
+    },
+    {
+      "id": "config",
+      "path": "internal/config",
+      "responsibility": "运行配置"
+    }
+  ],
+  "complexity": {
+    "mechanisms": [
+      "state_transition",
+      "error_propagation",
+      "concurrency",
+      "resource_lifecycle"
+    ]
+  },
+  "workflows": [
+    {
+      "id": "catalog",
+      "name": "组件版本维护",
+      "entry": "POST /api/v1/components/{id}/releases",
+      "steps": [
+        "校验组件与依赖约束",
+        "持久化版本和事件",
+        "查询与撤回版本"
+      ],
+      "success": "版本可查询且状态一致",
+      "failure": "非法输入或正在使用时拒绝写入",
+      "verification": "真实 HTTP 创建、查询和撤回版本",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "repository"
+      ]
+    },
+    {
+      "id": "resolve",
+      "name": "兼容集合求解",
+      "entry": "POST /api/v1/resolve",
+      "steps": [
+        "解析根约束",
+        "传播依赖并回溯",
+        "返回版本集合或冲突"
+      ],
+      "success": "所有根依赖与传递约束满足",
+      "failure": "无解或预算耗尽返回稳定错误",
+      "verification": "真实 HTTP 检查传递依赖、回溯与无解",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "resolution",
+        "semver",
+        "repository"
+      ]
+    },
+    {
+      "id": "upgrade",
+      "name": "环境升级方案",
+      "entry": "POST /api/v1/plans/{id}/apply",
+      "steps": [
+        "创建环境与升级方案",
+        "验证并生成差异",
+        "检查修订号并原子应用"
+      ],
+      "success": "环境与方案状态一同更新",
+      "failure": "过期方案返回 409 且状态不变",
+      "verification": "真实 HTTP 完成方案验证应用并验证过期保护",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "resolution",
+        "repository"
+      ]
+    }
+  ]
+}

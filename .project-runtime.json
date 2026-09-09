@@ -1,0 +1,23 @@
+{
+  "language": "Go",
+  "project_shape": "backend",
+  "source_extensions": [
+    ".go"
+  ],
+  "build_command": "go build -o build/compat-server ./cmd/server && go vet ./...",
+  "testing": "deferred",
+  "workflow_checks": [
+    {
+      "workflow_id": "catalog",
+      "command": "python3 checks/workflow.py catalog"
+    },
+    {
+      "workflow_id": "resolve",
+      "command": "python3 checks/workflow.py resolve"
+    },
+    {
+      "workflow_id": "upgrade",
+      "command": "python3 checks/workflow.py upgrade"
+    }
+  ]
+}
