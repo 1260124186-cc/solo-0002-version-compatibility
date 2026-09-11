@@ -24,11 +24,15 @@ type Plan struct {
 	CatalogRevision uint64            `json:"catalog_revision"`
 	Roots           map[string]string `json:"roots"`
 	Resolved        map[string]string `json:"resolved"`
+	Proof           *Proof            `json:"proof,omitempty"`
 	Changes         []Change          `json:"changes"`
 	State           string            `json:"state"`
 	Reason          string            `json:"reason"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
+	// ProofStatus is recomputed against the live catalog on every read and is
+	// deliberately not persisted.
+	ProofStatus string `json:"proof_status"`
 }
 
 type PlanInput struct {

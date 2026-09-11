@@ -125,8 +125,23 @@ def resolve(api):
     populate(api)
     result = api.request("POST", "/api/v1/resolve", {"roots": {"panel-shell": "*"}})
     require(result["resolved"] == {"panel-shell": "1.0.0", "render-engine": "2.0.0", "atlas-core": "2.0.0"}, "transitive selection is wrong")
+    proof = result.get("proof")
+    require(proof and proof["catalog_revision"] == result["catalog_revision"], "proof is missing or not bound to catalog revision")
+    require([step["component"] for step in proof["selection"]] == ["panel-shell", "render-engine", "atlas-core"], "proof chain order is not the decision order")
+    chain = {step["component"]: step for step in proof["selection"]}
+    require(chain["panel-shell"]["introduced_by"] == [{"source": "root", "constraint": "*"}], "root constraint origin is wrong")
+    require(chain["render-engine"]["introduced_by"] == [{"source": "panel-shell@1.0.0", "constraint": "*"}], "transitive constraint origin is wrong")
+    require(chain["atlas-core"]["introduced_by"] == [{"source": "render-engine@2.0.0", "constraint": "^2.0.0"}], "chosen version is not attributed to the introducing release")
+    require(chain["atlas-core"]["version"] == "2.0.0" and chain["atlas-core"]["order"] == 2, "proof step content is wrong")
+    require(proof["cycles"] == [], "acyclic resolution reports cycles")
     result = api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "*", "atlas-core": "1.0.0"}})
     require(result["resolved"]["render-engine"] == "1.0.0", "search did not backtrack")
+    chain = {step["component"]: step for step in result["proof"]["selection"]}
+    require(any(item["source"] == "root" and item["constraint"] == "1.0.0" for item in chain["atlas-core"]["introduced_by"]), "backtracked proof lost the root constraint")
+    # atlas-core is decided first (lexicographic order), so render-engine's
+    # constraint can only be verified against the choice already in place.
+    require(any(item["source"] == "render-engine@1.0.0" and item["constraint"] == "^1.0.0" for item in chain["atlas-core"]["verified_against"]), "backtracked proof lost the later transitive verification")
+    require(chain["render-engine"]["introduced_by"] == [{"source": "root", "constraint": "*"}], "backtracked root origin is wrong")
     result = api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "2.0.0", "atlas-core": "^1.0.0"}}, 422)
     require(result["error"]["code"] == "no_solution" and result["error"]["conflicts"], "missing conflict evidence")
     for name in ("cycle-alpha", "cycle-beta"):
@@ -135,34 +150,61 @@ def resolve(api):
     release(api, "cycle-beta", "1.0.0", {"cycle-alpha": ">=1.0.0 <2.0.0"})
     result = api.request("POST", "/api/v1/resolve", {"roots": {"cycle-alpha": "*"}})
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
+    proof = result["proof"]
+    require(len(proof["selection"]) == 2, "proof expanded the cycle instead of closing it")
+    chain = {step["component"]: step for step in proof["selection"]}
+    require(chain["cycle-beta"]["introduced_by"] == [{"source": "cycle-alpha@1.0.0", "constraint": "~1.0.0"}], "cycle entry edge is missing from the chain")
+    require(chain["cycle-alpha"]["verified_against"] == [{"source": "cycle-beta@1.0.0", "constraint": ">=1.0.0 <2.0.0"}], "closing cycle edge was not recorded as a later verification")
+    require(len(proof["cycles"]) == 1, "cycle closure missing or duplicated")
+    cycle = proof["cycles"][0]
+    require(cycle["nodes"] == ["cycle-alpha", "cycle-beta"], "cycle nodes are not canonical")
+    require([(edge["from"], edge["to"]) for edge in cycle["edges"]] == [("cycle-alpha", "cycle-beta"), ("cycle-beta", "cycle-alpha")], "cycle closure edge is missing")
+
 
 
 def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
     require(env["resolved"]["atlas-core"] == "1.0.0", "initial environment resolution failed")
+    require(env["proof_status"] == "current" and env["proof"]["catalog_revision"] == 8, "environment did not carry a proof bound to the catalog revision in force")
+    chain = {step["component"]: step for step in env["proof"]["selection"]}
+    require(chain["atlas-core"]["introduced_by"] == [{"source": "render-engine@1.0.0", "constraint": "^1.0.0"}], "environment proof does not explain the transitive choice")
     body = {"environment_id": "integration", "base_revision": 1, "roots": {"render-engine": "2.0.0"}, "reason": "验证新版兼容集合"}
     first = api.request("POST", "/api/v1/plans", body, 201)
     second = api.request("POST", "/api/v1/plans", body, 201)
+    require(first["proof_status"] == "absent" and "proof" not in first, "unvalidated plan must not carry a proof")
     path = "/api/v1/plans/" + first["id"]
     ready = api.request("POST", path + "/validate", {"revision": 1})
     require(ready["state"] == "ready" and len(ready["changes"]) == 2, "plan validation did not generate expected changes")
+    require(ready["proof_status"] == "current" and ready["proof"]["catalog_revision"] == 8, "validated plan proof is not bound to the catalog revision in force")
+    require(ready["proof"]["roots"] == {"render-engine": "2.0.0"}, "plan proof roots mismatch")
     release(api, "atlas-core", "3.0.0")
-    api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
+    stale = api.request("GET", path)
+    require(stale["proof_status"] == "stale" and stale["proof"]["catalog_revision"] == 8, "catalog change did not invalidate the old proof explicitly")
+    rejected = api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
+    require(rejected["error"]["code"] == "proof_stale", "stale proof was not rejected with a dedicated code")
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1, "stale plan mutated environment")
     ready = api.request("POST", path + "/validate", {"revision": ready["revision"]})
+    require(ready["proof_status"] == "current" and ready["proof"]["catalog_revision"] == 9, "revalidation did not rebind the proof to the new catalog revision")
     applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
     require(applied["environment"]["revision"] == 2 and applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "plan application failed")
+    require(applied["environment"]["proof_status"] == "current" and applied["plan"]["proof_status"] == "current", "application did not hand over the proof")
+    require(len(applied["environment"]["proof"]["selection"]) == 2, "applied environment proof is incomplete")
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
     other = "/api/v1/plans/" + second["id"]
     api.request("POST", other + "/validate", {"revision": 1}, 409)
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
-    require(cancelled["state"] == "cancelled", "plan cancellation failed")
+    require(cancelled["state"] == "cancelled" and cancelled["proof_status"] == "absent", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
     api.stop()
     api.start()
-    require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    stored = api.request("GET", path)
+    require(stored["state"] == "applied", "applied state lost after restart")
+    require(stored["proof_status"] == "current" and stored["proof"]["catalog_revision"] == 9, "proof did not survive restart and revalidate")
+    env = api.request("GET", "/api/v1/environments/integration")
+    require(env["revision"] == 2, "environment revision lost after restart")
+    require(env["proof_status"] == "current" and len(env["proof"]["selection"]) == 2, "environment proof did not survive restart")
+
 
 
 def main():

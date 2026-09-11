@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"solo-0002-version-compatibility/internal/domain"
+	"solo-0002-version-compatibility/internal/resolution"
 	"solo-0002-version-compatibility/internal/semver"
 )
 
@@ -68,6 +69,12 @@ func validateState(s *State) error {
 		if err := ValidateSelection(s.Catalog, env.Roots, env.Resolved, true); err != nil {
 			return err
 		}
+		// A live environment was created under the proof rules, so its proof
+		// must re-derive structurally. It may be bound to an older catalog
+		// revision (structural mode), but a broken chain is corruption.
+		if err := resolution.VerifyProof(s.Catalog, env.Roots, env.Resolved, env.Proof, false); err != nil {
+			return err
+		}
 	}
 	for id, plan := range s.Plans {
 		if id != plan.ID || plan.Revision == 0 {
@@ -84,6 +91,16 @@ func validateState(s *State) error {
 		case domain.Draft, domain.Cancelled:
 		case domain.Ready, domain.Applied:
 			if err := ValidateSelection(s.Catalog, plan.Roots, plan.Resolved, false); err != nil {
+				return err
+			}
+			if plan.Proof == nil || plan.Proof.CatalogRevision != plan.CatalogRevision {
+				return fmt.Errorf("plan proof is missing or bound to a different catalog revision")
+			}
+			// Ready plans may be bound to a catalog revision that has since
+			// moved (their proof then advertises stale); applied plans stay
+			// valid historical records. In both cases the proof structure
+			// itself must remain intact.
+			if err := resolution.VerifyProof(s.Catalog, plan.Roots, plan.Resolved, plan.Proof, false); err != nil {
 				return err
 			}
 		default:

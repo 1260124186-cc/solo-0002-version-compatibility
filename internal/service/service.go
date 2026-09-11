@@ -38,13 +38,6 @@ func (s *Service) Resolve(ctx context.Context, input domain.ResolutionInput) (do
 	return s.solver.Resolve(ctx, snapshot.Catalog, input.Roots)
 }
 
-func checkCatalog(revision uint64, state *repository.State) error {
-	if state.Catalog.Revision != revision {
-		return domain.Conflict("component versions changed during computation; retry against the current catalog")
-	}
-	return nil
-}
-
 func checkEnvironment(env domain.Environment, revision uint64) error {
 	if env.Revision != revision {
 		return domain.Conflict("environment revision is %d, expected %d; create a new plan", env.Revision, revision)

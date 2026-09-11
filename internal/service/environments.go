@@ -5,6 +5,7 @@ import (
 
 	"solo-0002-version-compatibility/internal/domain"
 	"solo-0002-version-compatibility/internal/repository"
+	"solo-0002-version-compatibility/internal/resolution"
 )
 
 func (s *Service) CreateEnvironment(ctx context.Context, input domain.EnvironmentInput) (domain.Environment, error) {
@@ -26,9 +27,11 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 		return domain.Environment{}, err
 	}
 	at := now()
-	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CreatedAt: at, UpdatedAt: at}
+	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Proof: resolved.Proof, Revision: 1, ProofStatus: domain.ProofCurrent, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(current *repository.State) error {
-		if err := checkCatalog(resolved.CatalogRevision, current); err != nil {
+		// Re-audit the proof inside the commit: it only stands if the catalog
+		// did not move between the snapshot and the commit.
+		if err := resolution.VerifyProof(current.Catalog, input.Roots, resolved.Resolved, resolved.Proof, true); err != nil {
 			return err
 		}
 		if _, exists := current.Environments[input.ID]; exists {
@@ -51,7 +54,9 @@ func (s *Service) ListEnvironments(ctx context.Context) ([]domain.Environment, e
 	}
 	items := make([]domain.Environment, 0, len(state.Environments))
 	for _, id := range domain.SortedKeys(state.Environments) {
-		items = append(items, state.Environments[id])
+		env := state.Environments[id]
+		env.ProofStatus = domain.ProofStatusFor(state.Catalog.Revision, env.Proof)
+		items = append(items, env)
 	}
 	return items, nil
 }
@@ -65,5 +70,6 @@ func (s *Service) Environment(ctx context.Context, id string) (domain.Environmen
 	if !exists {
 		return env, domain.Missing("environment", id)
 	}
+	env.ProofStatus = domain.ProofStatusFor(state.Catalog.Revision, env.Proof)
 	return env, nil
 }

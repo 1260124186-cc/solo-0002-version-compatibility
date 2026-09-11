@@ -72,7 +72,7 @@ func fail(w http.ResponseWriter, err error) {
 			status = http.StatusBadRequest
 		case "not_found":
 			status = http.StatusNotFound
-		case "conflict":
+		case "conflict", "proof_stale", "proof_invalid":
 			status = http.StatusConflict
 		case "no_solution", "limit_exceeded":
 			status = http.StatusUnprocessableEntity

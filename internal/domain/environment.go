@@ -8,8 +8,12 @@ type Environment struct {
 	Roots     map[string]string `json:"roots"`
 	Resolved  map[string]string `json:"resolved"`
 	Revision  uint64            `json:"revision"`
+	Proof     *Proof            `json:"proof,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
+	// ProofStatus is recomputed against the live catalog on startup and every
+	// read; any serialized value is ignored.
+	ProofStatus string `json:"proof_status"`
 }
 
 type EnvironmentInput struct {
@@ -33,4 +37,5 @@ type Resolution struct {
 	Resolved        map[string]string `json:"resolved"`
 	Edges           []Edge            `json:"edges"`
 	Steps           int               `json:"steps"`
+	Proof           *Proof            `json:"proof,omitempty"`
 }

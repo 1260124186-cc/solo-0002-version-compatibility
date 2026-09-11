@@ -24,7 +24,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 		return domain.Plan{}, err
 	}
 	at := now()
-	plan := domain.Plan{ID: id, EnvironmentID: input.EnvironmentID, BaseRevision: input.BaseRevision, Revision: 1, Roots: domain.CopyStrings(input.Roots), Resolved: make(map[string]string), Changes: make([]domain.Change, 0), State: domain.Draft, Reason: input.Reason, CreatedAt: at, UpdatedAt: at}
+	plan := domain.Plan{ID: id, EnvironmentID: input.EnvironmentID, BaseRevision: input.BaseRevision, Revision: 1, Roots: domain.CopyStrings(input.Roots), Resolved: make(map[string]string), Proof: nil, Changes: make([]domain.Change, 0), State: domain.Draft, Reason: input.Reason, ProofStatus: domain.ProofAbsent, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(state *repository.State) error {
 		env, exists := state.Environments[input.EnvironmentID]
 		if !exists {
@@ -57,6 +57,7 @@ func (s *Service) Plan(ctx context.Context, id string) (domain.Plan, error) {
 	if !exists {
 		return plan, domain.Missing("plan", id)
 	}
+	plan.ProofStatus = domain.ProofStatusFor(state.Catalog.Revision, plan.Proof)
 	return plan, nil
 }
 
@@ -81,6 +82,7 @@ func (s *Service) ListPlans(ctx context.Context, environmentID, phase string) ([
 		if phase != "" && plan.State != phase {
 			continue
 		}
+		plan.ProofStatus = domain.ProofStatusFor(state.Catalog.Revision, plan.Proof)
 		items = append(items, plan)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -125,18 +127,23 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		if err := latest.CanValidate(); err != nil {
 			return err
 		}
-		if err := checkCatalog(result.CatalogRevision, current); err != nil {
+		if err := checkEnvironment(current.Environments[plan.EnvironmentID], plan.BaseRevision); err != nil {
 			return err
 		}
-		if err := checkEnvironment(current.Environments[plan.EnvironmentID], plan.BaseRevision); err != nil {
+		// Audit the freshly built proof against the catalog visible inside the
+		// commit; a catalog change in the meantime invalidates the result and
+		// leaves the plan untouched for another validation.
+		if err := resolution.VerifyProof(current.Catalog, plan.Roots, result.Resolved, result.Proof, true); err != nil {
 			return err
 		}
 		latest.State = domain.Ready
 		latest.Resolved = result.Resolved
+		latest.Proof = result.Proof
 		latest.Changes = changes
 		latest.CatalogRevision = result.CatalogRevision
 		latest.Revision++
 		latest.UpdatedAt = now()
+		latest.ProofStatus = domain.ProofCurrent
 		current.Plans[id] = latest
 		current.Record("plan", id, "validated", latest.UpdatedAt)
 		updated = latest

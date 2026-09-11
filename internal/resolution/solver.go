@@ -51,7 +51,7 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		}
 		work.roots[id] = constraint
 	}
-	selected, err := work.solve(make(map[string]candidate))
+	selected, order, err := work.solve(make(map[string]candidate), nil)
 	if err != nil {
 		return domain.Resolution{}, err
 	}
@@ -66,34 +66,35 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 			result.Edges = append(result.Edges, domain.Edge{From: id, To: dep, Constraint: chosen.dependencies[dep].Raw})
 		}
 	}
+	result.Proof = buildProof(catalog.Revision, roots, selected, order)
 	return result, nil
 }
 
-func (s *search) solve(selected map[string]candidate) (map[string]candidate, error) {
+func (s *search) solve(selected map[string]candidate, order []string) (map[string]candidate, []string, error) {
 	if err := s.ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.steps++
 	if s.steps > s.maxSteps {
-		return nil, domain.Limit("dependency search exhausted its step budget")
+		return nil, nil, domain.Limit("dependency search exhausted its step budget")
 	}
 	needs := s.requirements(selected)
 	if len(needs) > s.maxNodes {
-		return nil, domain.Limit("dependency graph exceeds component limit")
+		return nil, nil, domain.Limit("dependency graph exceeds component limit")
 	}
 	unresolved := ""
 	for _, id := range domain.SortedKeys(needs) {
 		if chosen, ok := selected[id]; ok {
 			if !matchesAll(chosen.version, needs[id]) {
 				s.explain(id, needs[id])
-				return nil, nil
+				return nil, nil, nil
 			}
 		} else if unresolved == "" {
 			unresolved = id
 		}
 	}
 	if unresolved == "" {
-		return selected, nil
+		return selected, order, nil
 	}
 	for _, choice := range s.catalog[unresolved] {
 		if !matchesAll(choice.version, needs[unresolved]) {
@@ -104,16 +105,16 @@ func (s *search) solve(selected map[string]candidate) (map[string]candidate, err
 			next[id] = value
 		}
 		next[unresolved] = choice
-		result, err := s.solve(next)
+		result, resultOrder, err := s.solve(next, append(order, unresolved))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if result != nil {
-			return result, nil
+			return result, resultOrder, nil
 		}
 	}
 	s.explain(unresolved, needs[unresolved])
-	return nil, nil
+	return nil, nil, nil
 }
 
 func (s *search) requirements(selected map[string]candidate) map[string][]requirement {
