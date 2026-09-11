@@ -165,15 +165,62 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def matrix(api):
+    populate(api)
+    axes = {
+        "first": {"component": "render-engine", "versions": ["2.0.0", "1.0.0"]},
+        "second": {"component": "atlas-core", "versions": ["2.0.0", "1.0.0"]},
+        "roots": {"panel-shell": "*"},
+    }
+    result = api.request("POST", "/api/v1/matrices", axes)
+    require(not result["saved"] and "id" not in result, "unsaved matrix gained an identity")
+    order = [(cell["first_version"], cell["second_version"]) for cell in result["cells"]]
+    require(order == [("2.0.0", "2.0.0"), ("2.0.0", "1.0.0"), ("1.0.0", "2.0.0"), ("1.0.0", "1.0.0")],
+            "matrix cells do not follow input version order")
+    cells = {(cell["first_version"], cell["second_version"]): cell for cell in result["cells"]}
+    require(cells[("2.0.0", "2.0.0")]["compatible"] and cells[("1.0.0", "1.0.0")]["compatible"], "aligned versions rejected")
+    require(not cells[("2.0.0", "1.0.0")]["compatible"] and not cells[("1.0.0", "2.0.0")]["compatible"], "mismatched versions accepted")
+    require(cells[("2.0.0", "1.0.0")]["detail"] and cells[("2.0.0", "1.0.0")]["conflicts"], "incompatible cell lacks a reason")
+    require(cells[("1.0.0", "1.0.0")]["resolved"] == {"panel-shell": "1.0.0", "render-engine": "1.0.0", "atlas-core": "1.0.0"},
+            "compatible cell resolution is wrong")
+    require(result["compatible"] == 2 and result["incompatible"] == 2 and result["steps"] > 0, "matrix tally is wrong")
+    api.request("POST", "/api/v1/matrices", {"first": axes["first"], "second": axes["first"]}, 400)
+    api.request("POST", "/api/v1/matrices", {"first": {"component": "render-engine", "versions": []}, "second": axes["second"]}, 400)
+    api.request("POST", "/api/v1/matrices", {"first": {"component": "render-engine", "versions": ["1.0.0", "1.0.0"]}, "second": axes["second"]}, 400)
+    api.request("POST", "/api/v1/matrices", {"first": {"component": "missing-one", "versions": ["1.0.0"]}, "second": axes["second"]}, 404)
+    api.request("POST", "/api/v1/matrices", {**axes, "roots": {"render-engine": "*"}}, 400)
+    crowded = {"first": {"component": "render-engine", "versions": [f"1.0.{n}" for n in range(13)]}, "second": {"component": "atlas-core", "versions": ["1.0.0"]}}
+    api.request("POST", "/api/v1/matrices", crowded, 400)
+    result = api.request("POST", "/api/v1/matrices", {"first": {"component": "render-engine", "versions": ["9.9.9"]},
+                                                      "second": {"component": "atlas-core", "versions": ["1.0.0"]}})
+    require(not result["cells"][0]["compatible"] and "9.9.9" in result["cells"][0]["detail"], "unknown candidate version not reported")
+    saved = api.request("POST", "/api/v1/matrices", {**axes, "save": True}, 201)
+    require(saved["saved"] and saved["id"].startswith("matrix-"), "matrix was not saved")
+    require(saved["catalog_revision"] == result["catalog_revision"], "matrix did not reuse one catalog view")
+    require(api.request("GET", "/api/v1/matrices/" + saved["id"])["cells"] == saved["cells"], "saved matrix cells changed")
+    listing = api.request("GET", "/api/v1/matrices")
+    require(listing["total"] == 1 and listing["items"][0]["id"] == saved["id"], "saved matrix not listed")
+    api.request("GET", "/api/v1/matrices/matrix-absent", expected=404)
+    events = api.request("GET", "/api/v1/events?entity_id=" + saved["id"])["items"]
+    require([event["action"] for event in events] == ["computed"], "matrix event missing")
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {})
+    result = api.request("POST", "/api/v1/matrices", {"first": {"component": "render-engine", "versions": ["1.0.0"]},
+                                                      "second": {"component": "atlas-core", "versions": ["1.0.0"]}})
+    require(not result["cells"][0]["compatible"] and "withdrawn" in result["cells"][0]["detail"], "withdrawn candidate not reported")
+    api.stop()
+    api.start()
+    require(api.request("GET", "/api/v1/matrices/" + saved["id"])["id"] == saved["id"], "saved matrix lost after restart")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "matrix"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "matrix": matrix}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

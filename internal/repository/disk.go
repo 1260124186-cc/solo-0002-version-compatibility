@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20
@@ -36,6 +38,10 @@ func readState(path string) (*State, error) {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
+	}
+	// Schema 1 files written before matrices existed lack the collection.
+	if state.Matrices == nil {
+		state.Matrices = make(map[string]domain.Matrix)
 	}
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)

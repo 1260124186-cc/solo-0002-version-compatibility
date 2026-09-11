@@ -37,6 +37,14 @@ curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json'
 
 求解响应的 `resolved` 包含 `render-unit=1.0.0` 和 `compute-core=1.0.0`，`edges` 给出传递依赖边，`steps` 给出搜索步骤，`catalog_revision` 标记所用目录版本。求解只计算结果，不改变任何环境。
 
+比较两个组件的候选版本组合时，提交兼容性矩阵计算。两个轴必须是不同组件，各给 1–12 个候选版本，`roots` 提供组合之外必须满足的公共根依赖：
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/matrices -H 'Content-Type: application/json' -d '{"first":{"component":"render-unit","versions":["1.0.0"]},"second":{"component":"compute-core","versions":["1.0.0"]},"roots":{},"save":true}'
+```
+
+响应的 `cells` 按输入版本顺序逐组合给出结果：兼容的单元格含完整 `resolved` 集合，不兼容的含 `detail` 与 `conflicts` 原因；某个组合无解不影响其他组合。一次计算使用同一目录快照（`catalog_revision`）并共享一份搜索步数预算。`save=true` 时矩阵被保存（状态码 201），之后可用返回的 `id` 通过 `GET /api/v1/matrices/{id}` 查询；省略 `save` 时只计算不保存。
+
 创建环境：
 
 ```sh
@@ -60,6 +68,8 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
 | POST /resolve | 求解根依赖和传递依赖 |
+| GET、POST /matrices | 分页查询已保存矩阵、计算两组件候选版本的兼容性矩阵（`save=true` 时保存） |
+| GET /matrices/{id} | 查看已保存的兼容性矩阵 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
 | GET、POST /plans | 分页筛选、创建方案 |
@@ -77,6 +87,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
 - 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 兼容性矩阵每轴 1–12 个候选版本（最多 144 个组合），公共根依赖最多 30 条且不得包含轴组件；全部组合基于同一目录快照并共享一次求解的步数预算，预算或请求期限耗尽返回整体错误，单个组合无解只标记自身单元格。最多保存 500 个矩阵，矩阵是历史记录，保存后目录变化不影响其内容。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
@@ -94,9 +105,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py matrix
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消，以及矩阵的组合顺序、独立失败、保存查询与重启保留。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

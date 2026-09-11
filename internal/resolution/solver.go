@@ -13,36 +13,52 @@ type Solver struct {
 	MaxNodes int
 }
 
-type search struct {
-	ctx       context.Context
-	catalog   map[string][]candidate
-	roots     map[string]semver.Constraint
-	steps     int
-	maxSteps  int
-	maxNodes  int
-	conflicts []string
+func (s Solver) limits() (int, int) {
+	maxSteps, maxNodes := s.MaxSteps, s.MaxNodes
+	if maxSteps <= 0 {
+		maxSteps = 50000
+	}
+	if maxNodes <= 0 {
+		maxNodes = 128
+	}
+	return maxSteps, maxNodes
 }
 
-func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
+// Session solves multiple root sets against one compiled catalog view while
+// sharing a single step budget across all solves.
+type Session struct {
+	catalog  map[string][]candidate
+	revision uint64
+	maxSteps int
+	maxNodes int
+	steps    int
+}
+
+func (s Solver) NewSession(ctx context.Context, catalog domain.Catalog) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	compiled, err := compile(ctx, catalog)
+	if err != nil {
+		return nil, err
+	}
+	maxSteps, maxNodes := s.limits()
+	return &Session{catalog: compiled, revision: catalog.Revision, maxSteps: maxSteps, maxNodes: maxNodes}, nil
+}
+
+// Steps reports the total search steps consumed by the session so far.
+func (s *Session) Steps() int { return s.steps }
+
+func (s *Session) Solve(ctx context.Context, roots map[string]string) (domain.Resolution, error) {
 	if err := domain.ValidateRequirements(roots, false); err != nil {
 		return domain.Resolution{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return domain.Resolution{}, err
 	}
-	compiled, err := compile(ctx, catalog)
-	if err != nil {
-		return domain.Resolution{}, err
-	}
-	if s.MaxSteps <= 0 {
-		s.MaxSteps = 50000
-	}
-	if s.MaxNodes <= 0 {
-		s.MaxNodes = 128
-	}
-	work := search{ctx: ctx, catalog: compiled, roots: make(map[string]semver.Constraint), maxSteps: s.MaxSteps, maxNodes: s.MaxNodes}
+	work := search{ctx: ctx, catalog: s.catalog, roots: make(map[string]semver.Constraint), maxSteps: s.maxSteps - s.steps, maxNodes: s.maxNodes}
 	for _, id := range domain.SortedKeys(roots) {
-		if _, exists := catalog.Components[id]; !exists {
+		if _, exists := s.catalog[id]; !exists {
 			return domain.Resolution{}, domain.Missing("component", id)
 		}
 		constraint, err := semver.ParseConstraint(roots[id])
@@ -52,13 +68,14 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		work.roots[id] = constraint
 	}
 	selected, err := work.solve(make(map[string]candidate))
+	s.steps += work.steps
 	if err != nil {
 		return domain.Resolution{}, err
 	}
 	if selected == nil {
 		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints", Conflicts: work.conflicts}
 	}
-	result := domain.Resolution{CatalogRevision: catalog.Revision, Resolved: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
+	result := domain.Resolution{CatalogRevision: s.revision, Resolved: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
 	for _, id := range domain.SortedKeys(selected) {
 		chosen := selected[id]
 		result.Resolved[id] = chosen.release.Version
@@ -67,6 +84,24 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		}
 	}
 	return result, nil
+}
+
+func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
+	session, err := s.NewSession(ctx, catalog)
+	if err != nil {
+		return domain.Resolution{}, err
+	}
+	return session.Solve(ctx, roots)
+}
+
+type search struct {
+	ctx       context.Context
+	catalog   map[string][]candidate
+	roots     map[string]semver.Constraint
+	steps     int
+	maxSteps  int
+	maxNodes  int
+	conflicts []string
 }
 
 func (s *search) solve(selected map[string]candidate) (map[string]candidate, error) {

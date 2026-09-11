@@ -19,7 +19,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 	if input.BaseRevision == 0 {
 		return domain.Plan{}, domain.Invalid("base_revision must be positive")
 	}
-	id, err := freshID()
+	id, err := freshID("plan")
 	if err != nil {
 		return domain.Plan{}, err
 	}

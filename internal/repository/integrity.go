@@ -8,13 +8,13 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil || s.Matrices == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
 		return fmt.Errorf("invalid catalog revision or component count")
 	}
-	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Events) > 10000 {
+	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Matrices) > domain.MaxMatrices || len(s.Events) > 10000 {
 		return fmt.Errorf("persisted collection exceeds capacity")
 	}
 	for id, component := range s.Catalog.Components {
@@ -90,6 +90,38 @@ func validateState(s *State) error {
 			return fmt.Errorf("invalid plan state")
 		}
 	}
+	for id, matrix := range s.Matrices {
+		if id != matrix.ID || !matrix.Saved {
+			return fmt.Errorf("invalid matrix identity")
+		}
+		if matrix.CatalogRevision > s.Catalog.Revision {
+			return fmt.Errorf("matrix references an invalid catalog revision")
+		}
+		if err := domain.ValidateMatrixInput(domain.MatrixInput{First: matrix.First, Second: matrix.Second, Roots: matrix.Roots}); err != nil {
+			return err
+		}
+		if len(matrix.Cells) != len(matrix.First.Versions)*len(matrix.Second.Versions) || matrix.Compatible+matrix.Incompatible != len(matrix.Cells) {
+			return fmt.Errorf("matrix cell tally mismatch")
+		}
+		for _, cell := range matrix.Cells {
+			if !contains(matrix.First.Versions, cell.FirstVersion) || !contains(matrix.Second.Versions, cell.SecondVersion) {
+				return fmt.Errorf("matrix cell references an unknown axis version")
+			}
+			if cell.Compatible != (cell.Detail == "") {
+				return fmt.Errorf("matrix cell mixes compatibility and failure detail")
+			}
+			if cell.Compatible {
+				if len(cell.Resolved) == 0 {
+					return fmt.Errorf("compatible matrix cell lacks a resolution")
+				}
+				for component, version := range cell.Resolved {
+					if _, ok := s.Catalog.Releases[component][version]; !ok {
+						return fmt.Errorf("matrix resolution references unknown release")
+					}
+				}
+			}
+		}
+	}
 	var previous uint64
 	for i, event := range s.Events {
 		if event.Sequence == 0 || event.Sequence > s.Revision || (i > 0 && event.Sequence != previous+1) {
@@ -101,6 +133,15 @@ func validateState(s *State) error {
 		return fmt.Errorf("event tail does not match state revision")
 	}
 	return nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateSelection also verifies that the set contains no unreachable entries.
