@@ -77,11 +77,12 @@ func (s *Service) WithdrawPrecheck(ctx context.Context, componentID, version str
 		if env.Resolved[componentID] != version {
 			continue
 		}
+		paths := impactPaths(state.Catalog, env.Resolved, env.Roots, componentID)
 		report.Environments = append(report.Environments, ImpactEnvironment{
 			EnvironmentID: envID,
 			Revision:      env.Revision,
-			Roots:         domain.CopyStrings(env.Roots),
-			Paths:         impactPaths(state.Catalog, env.Resolved, env.Roots, componentID),
+			Roots:         impactRoots(env.Roots, paths),
+			Paths:         paths,
 		})
 	}
 	planIDs := make([]string, 0, len(state.Plans))
@@ -100,13 +101,14 @@ func (s *Service) WithdrawPrecheck(ctx context.Context, componentID, version str
 		if plan.State != domain.Ready || plan.Resolved[componentID] != version {
 			continue
 		}
+		paths := impactPaths(state.Catalog, plan.Resolved, plan.Roots, componentID)
 		report.ReadyPlans = append(report.ReadyPlans, ImpactReadyPlan{
 			PlanID:          plan.ID,
 			EnvironmentID:   plan.EnvironmentID,
 			Revision:        plan.Revision,
 			CatalogRevision: plan.CatalogRevision,
-			Roots:           domain.CopyStrings(plan.Roots),
-			Paths:           impactPaths(state.Catalog, plan.Resolved, plan.Roots, componentID),
+			Roots:           impactRoots(plan.Roots, paths),
+			Paths:           paths,
 		})
 	}
 	// Current withdrawal rule: only environments using the release block it;
@@ -118,6 +120,23 @@ func (s *Service) WithdrawPrecheck(ctx context.Context, componentID, version str
 type impactHop struct {
 	from       string
 	constraint string
+}
+
+// impactRoots keeps only root dependencies from which the target component is
+// reachable, according to the computed paths. Roots unrelated to the target
+// must never appear in the precheck report.
+func impactRoots(allRoots map[string]string, paths [][]ImpactNode) map[string]string {
+	roots := make(map[string]string, len(paths))
+	for _, path := range paths {
+		if len(path) == 0 {
+			continue
+		}
+		root := path[0].ComponentID
+		if constraint, exists := allRoots[root]; exists {
+			roots[root] = constraint
+		}
+	}
+	return roots
 }
 
 // impactPaths returns one shortest dependency path per root from which the

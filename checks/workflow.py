@@ -215,6 +215,47 @@ def precheck(api):
     require([node(step) for step in direct["environments"][0]["paths"][0]] ==
             [("render-engine", "1.0.0", "")], "a root component should produce a single-node path")
 
+    # Regression: with multiple roots, only roots that can reach the target
+    # belong to roots/paths; an unrelated independent root must stay out.
+    component(api, "standalone-tool")
+    release(api, "standalone-tool", "1.0.0")
+    multi = api.request("POST", "/api/v1/environments",
+                        {"id": "multi", "name": "多根环境",
+                         "roots": {"render-engine": "1.0.0", "standalone-tool": "*"}}, 201)
+    require(multi["resolved"] == {"render-engine": "1.0.0", "atlas-core": "1.0.0",
+                                  "standalone-tool": "1.0.0"},
+            "multi-root environment did not resolve both independent roots")
+    impact = inspect("atlas-core", "1.0.0")
+    multi_impact = next(item for item in impact["environments"] if item["environment_id"] == "multi")
+    require(multi_impact["roots"] == {"render-engine": "1.0.0"},
+            "unrelated root leaked into impacted roots")
+    require(len(multi_impact["paths"]) == 1, "only the reaching root should produce a path")
+    require([node(step) for step in multi_impact["paths"][0]] ==
+            [("render-engine", "1.0.0", ""), ("atlas-core", "1.0.0", "^1.0.0")],
+            "multi-root dependency path is wrong")
+
+    independent = inspect("standalone-tool", "1.0.0")
+    independent_impact = next(item for item in independent["environments"]
+                              if item["environment_id"] == "multi")
+    require(independent_impact["roots"] == {"standalone-tool": "*"} and
+            len(independent_impact["paths"]) == 1 and
+            [node(step) for step in independent_impact["paths"][0]] ==
+            [("standalone-tool", "1.0.0", "")],
+            "unrelated roots leaked for an independent target")
+
+    multi_plan_body = {"environment_id": "multi", "base_revision": 1,
+                       "roots": {"render-engine": "2.0.0", "standalone-tool": "*"},
+                       "reason": "多根升级方案"}
+    multi_plan = api.request("POST", "/api/v1/plans", multi_plan_body, 201)
+    multi_ready = api.request("POST", f"/api/v1/plans/{multi_plan['id']}/validate", {"revision": 1})
+    require(multi_ready["state"] == "ready", "multi-root plan should become ready")
+    pending = inspect("atlas-core", "2.0.0")
+    multi_plan_impact = next(item for item in pending["ready_plans"]
+                             if item["plan_id"] == multi_plan["id"])
+    require(multi_plan_impact["roots"] == {"render-engine": "2.0.0"} and
+            len(multi_plan_impact["paths"]) == 1,
+            "unrelated root leaked into ready plan impact")
+
     inspect("missing-core", "1.0.0", 404)
     inspect("atlas-core", "9.9.9", 404)
 
@@ -230,6 +271,7 @@ def precheck(api):
             "precheck recorded an event")
 
     # Once the catalog moves, withdrawing with the precheck revision is rejected.
+    revision = inspect("atlas-core", "1.0.0")["catalog_revision"]
     release(api, "atlas-core", "3.0.0")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw",
                 {"catalog_revision": revision}, 409)
