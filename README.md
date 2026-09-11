@@ -51,6 +51,48 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 依赖配置集
+
+当多套环境重复使用同一组根依赖时，可以把约束保存为依赖配置集（profile）。配置集有名称、说明和修订号，**保存时只做语法校验，不求解目录**——即使引用的组件尚不存在或约束无解，配置集也能创建成功；只有在按修订生成环境时，才会针对当前组件目录实际求解。
+
+```sh
+# 创建配置集，返回 revision=1；roots 是完整的根依赖集合
+curl -s http://127.0.0.1:8092/api/v1/profiles -H 'Content-Type: application/json' -d '{
+  "id": "edge-stack",
+  "name": "边缘标准栈",
+  "description": "现场环境常用组件约束",
+  "roots": {"render-engine": "1.0.0", "panel-shell": "*"}
+}'
+
+# 查看配置集（含每个修订的不可变快照）与列表
+curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack
+curl -s http://127.0.0.1:8092/api/v1/profiles
+
+# 编辑：整体替换名称、说明和 roots，必须携带所基于的修订号，成功后 revision 加一
+curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack -X PATCH \
+  -H 'Content-Type: application/json' \
+  -d '{"revision":1,"name":"边缘标准栈","description":"放宽约束","roots":{"render-engine":"*","panel-shell":"*"}}'
+
+# 按指定修订生成新环境（省略 profile_revision 时使用当前修订）
+curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack/environments \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"edge-a","name":"边缘环境 A"}'
+curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack/environments \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"edge-old","name":"按旧修订生成","profile_revision":1}'
+
+# 停用配置集（不可恢复），需携带当前修订号
+curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack/deactivate \
+  -H 'Content-Type: application/json' -d '{"revision":2}'
+```
+
+生成的环境与普通环境完全一致，另外记录 `profile_id` 和 `profile_revision` 两个来源字段。关键语义：
+
+- 环境只与生成时的那个**不可变修订快照**关联；之后编辑配置集不会自动改变已有环境，需要升级时照常走 plans 流程。
+- 生成时实时求解当前目录：目录已变化时结果可能与上次不同；无解返回 422（含 `conflicts`），引用的组件不存在返回 404。
+- 停用后不能再生成新环境（409），也不能再编辑；已有环境继续可用、可升级。
+- 已停用配置集及其修订历史仍可查看。环境可正常引用，因为它保存的是生成时的快照。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,6 +104,11 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| GET、POST /profiles | 分页查询、创建依赖配置集（只校验语法，不求解） |
+| GET /profiles/{id} | 查看配置集及其不可变修订历史 |
+| PATCH /profiles/{id} | 整体编辑名称、说明、roots，生成新修订 |
+| POST /profiles/{id}/deactivate | 按修订号核对后停用配置集 |
+| POST /profiles/{id}/environments | 按指定（或当前）修订实时求解并生成环境 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -76,7 +123,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - 仅支持稳定 `major.minor.patch`，每段最大 4294967295，无前导零。支持 `*`、精确版本、`>=`、`<=`、`>`、`<`、`^`、`~` 及空格分隔的交集。
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
-- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境、5000 个方案、200 个依赖配置集，每个配置集最多保留 200 个修订快照。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
@@ -94,9 +141,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py profiles
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消；profiles 另外覆盖仅保存不求解、按修订生成、编辑隔离、停用阻断和旧数据加载。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

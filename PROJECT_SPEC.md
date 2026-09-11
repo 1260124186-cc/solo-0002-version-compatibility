@@ -6,7 +6,8 @@
 ## 核心实体
 - Component：组件标识、名称、说明、创建时间。
 - Release：不可变的语义版本、依赖约束、可用或撤回状态。
-- Environment：环境标识、根依赖、已解析版本集合、修订号。
+- Environment：环境标识、根依赖、已解析版本集合、修订号；由依赖配置集生成时记录来源配置集标识与修订号。
+- Profile：可复用的根依赖配置集，具有名称、说明、修订号与 active/inactive 状态；每个修订保存不可变快照。保存只做语法校验不求解，按修订生成环境时才针对当前目录求解；编辑产生新修订且不影响已生成环境；停用后禁止生成新环境，已有环境继续可用。
 - Plan：环境原修订号、期望根依赖、求解结果、目录修订号、状态、差异与原因。
 - Event：递增序号、变更对象、动作、时间；与业务状态一同持久化。
 
@@ -31,7 +32,7 @@
 - cmd/server：服务启动与平滑退出。
 
 ## 接口
-所有业务接口以 /api/v1 开头。components 及其 releases 维护组件；resolve 计算版本集合；environments 管理目标环境；plans 及 validate、apply、cancel 动作控制升级；events 查看变更轨迹。/healthz 返回可用状态。响应均为 JSON；错误含 code、detail 及可选 conflicts。
+所有业务接口以 /api/v1 开头。components 及其 releases 维护组件；resolve 计算版本集合；environments 管理目标环境；profiles 维护可复用根依赖配置集及其修订、停用与按修订生成环境；plans 及 validate、apply、cancel 动作控制升级；events 查看变更轨迹。/healthz 返回可用状态。响应均为 JSON；错误含 code、detail 及可选 conflicts。
 
 ## 持久化与并发
 数据写入独立运行目录的 state.json，在同目录临时文件完成写入并执行 fsync 后原子替换；只有持久化成功才替换内存状态。进程使用系统文件锁阻止共享数据目录并发启动。进程内修改串行化，解析使用状态副本；提交时重新检查修订号。服务面向受信任网络，默认监听回环地址。

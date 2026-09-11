@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20
@@ -39,6 +41,11 @@ func readState(path string) (*State, error) {
 	}
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)
+	}
+	// Profiles were added after schema 1 shipped; state files written by older
+	// builds simply omit the collection and must keep loading.
+	if state.Profiles == nil {
+		state.Profiles = make(map[string]domain.Profile)
 	}
 	return &state, nil
 }

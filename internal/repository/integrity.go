@@ -14,7 +14,7 @@ func validateState(s *State) error {
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
 		return fmt.Errorf("invalid catalog revision or component count")
 	}
-	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Events) > 10000 {
+	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Profiles) > domain.MaxProfiles || len(s.Events) > 10000 {
 		return fmt.Errorf("persisted collection exceeds capacity")
 	}
 	for id, component := range s.Catalog.Components {
@@ -67,6 +67,55 @@ func validateState(s *State) error {
 		}
 		if err := ValidateSelection(s.Catalog, env.Roots, env.Resolved, true); err != nil {
 			return err
+		}
+		if (env.ProfileID == "") != (env.ProfileRevision == 0) {
+			return fmt.Errorf("environment profile provenance is incomplete")
+		}
+		if env.ProfileID != "" {
+			profile, ok := s.Profiles[env.ProfileID]
+			if !ok {
+				return fmt.Errorf("environment references a missing profile")
+			}
+			if _, ok := profile.Revisions[env.ProfileRevision]; !ok {
+				return fmt.Errorf("environment references a missing profile revision")
+			}
+		}
+	}
+	for id, profile := range s.Profiles {
+		if id != profile.ID || profile.Revision == 0 || profile.Revisions == nil {
+			return fmt.Errorf("invalid profile identity or revision history")
+		}
+		if err := domain.ValidateID(id); err != nil {
+			return err
+		}
+		if profile.State != domain.ProfileActive && profile.State != domain.ProfileInactive {
+			return fmt.Errorf("invalid profile state")
+		}
+		if (profile.State == domain.ProfileInactive) != (profile.InactiveAt != nil) {
+			return fmt.Errorf("invalid profile deactivation timestamp")
+		}
+		if len(profile.Revisions) > domain.MaxProfileRevisions {
+			return fmt.Errorf("too many profile revisions")
+		}
+		if _, ok := profile.Revisions[profile.Revision]; !ok {
+			return fmt.Errorf("profile current revision lacks a snapshot")
+		}
+		for number, snapshot := range profile.Revisions {
+			if number != snapshot.Revision || number == 0 || number > profile.Revision {
+				return fmt.Errorf("invalid profile revision snapshot")
+			}
+			if err := domain.ValidateText(snapshot.Name, "name", 1, 120); err != nil {
+				return err
+			}
+			if err := domain.ValidateText(snapshot.Description, "description", 0, 2000); err != nil {
+				return err
+			}
+			if err := domain.ValidateRequirements(snapshot.Roots, false); err != nil {
+				return err
+			}
+			if snapshot.CreatedAt.IsZero() {
+				return fmt.Errorf("profile revision is missing its timestamp")
+			}
 		}
 	}
 	for id, plan := range s.Plans {

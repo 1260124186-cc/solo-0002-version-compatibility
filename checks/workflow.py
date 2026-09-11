@@ -165,15 +165,93 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def profiles(api):
+    populate(api)
+    body = {
+        "id": "edge-stack",
+        "name": "边缘标准栈",
+        "description": "现场环境常用组件约束",
+        "roots": {"render-engine": "1.0.0", "panel-shell": "*"},
+    }
+    created = api.request("POST", "/api/v1/profiles", body, 201)
+    require(created["revision"] == 1 and created["state"] == "active"
+            and len(created["revisions"]) == 1, "profile was not created at revision 1")
+    # Saving does not require a feasible solution or existing components.
+    api.request("POST", "/api/v1/profiles", {
+        "id": "future-stack", "name": "future", "description": "",
+        "roots": {"panel-shell": "^9.9.9", "missing-stack": "*"},
+    }, 201)
+    api.request("POST", "/api/v1/profiles",
+                {"id": "edge-stack", "name": "dup", "description": "", "roots": {"panel-shell": "*"}}, 409)
+    env = api.request("POST", "/api/v1/profiles/edge-stack/environments",
+                      {"id": "edge-a", "name": "边缘环境 A"}, 201)
+    require(env["resolved"] == {"panel-shell": "1.0.0", "render-engine": "1.0.0", "atlas-core": "1.0.0"},
+            "environment was not solved from the profile revision")
+    require(env["profile_id"] == "edge-stack" and env["profile_revision"] == 1, "environment lost profile provenance")
+    # Generating from a saved but unsatisfiable profile revision fails at solve time.
+    api.request("POST", "/api/v1/profiles/future-stack/environments",
+                {"id": "edge-x", "name": "无解环境"}, 404)
+    release(api, "panel-shell", "2.0.0", {"render-engine": "2.0.0"})
+    component(api, "missing-stack")
+    api.request("POST", "/api/v1/profiles/future-stack/environments",
+                {"id": "edge-x", "name": "无解环境"}, 422)
+    # Edit the profile to revision 2; environment generated from revision 1 must be unchanged.
+    updated = api.request("PATCH", "/api/v1/profiles/edge-stack", {
+        "revision": 1, "name": "边缘标准栈", "description": "放宽 panel 约束",
+        "roots": {"render-engine": "*", "panel-shell": "*"},
+    })
+    require(updated["revision"] == 2 and len(updated["revisions"]) == 2, "profile edit did not add a revision")
+    require(api.request("GET", "/api/v1/environments/edge-a")["resolved"]["panel-shell"] == "1.0.0",
+            "editing a profile mutated an existing environment")
+    api.request("PATCH", "/api/v1/profiles/edge-stack", {
+        "revision": 1, "name": "stale", "description": "", "roots": {"panel-shell": "*"},
+    }, 409)
+    # Generate explicitly from the old revision and from the current one.
+    old = api.request("POST", "/api/v1/profiles/edge-stack/environments",
+                      {"id": "edge-old", "name": "旧修订", "profile_revision": 1}, 201)
+    require(old["profile_revision"] == 1 and old["resolved"]["render-engine"] == "1.0.0",
+            "explicit old revision generation failed")
+    current = api.request("POST", "/api/v1/profiles/edge-stack/environments",
+                          {"id": "edge-new", "name": "新修订"}, 201)
+    require(current["profile_revision"] == 2 and current["resolved"]["panel-shell"] == "2.0.0",
+            "default revision generation did not use the current snapshot")
+    api.request("POST", "/api/v1/profiles/edge-stack/environments",
+                {"id": "edge-gone", "name": "缺修订", "profile_revision": 99}, 404)
+    # Deactivate: no new environments, existing ones stay available.
+    deactivated = api.request("POST", "/api/v1/profiles/edge-stack/deactivate", {"revision": 2})
+    require(deactivated["state"] == "inactive" and deactivated["revision"] == 3
+            and deactivated["inactive_at"], "profile deactivation failed")
+    api.request("POST", "/api/v1/profiles/edge-stack/environments",
+                {"id": "edge-blocked", "name": "停用后禁止"}, 409)
+    api.request("POST", "/api/v1/profiles/edge-stack/deactivate", {"revision": 3}, 409)
+    api.request("PATCH", "/api/v1/profiles/edge-stack", {
+        "revision": 3, "name": "x", "description": "", "roots": {"panel-shell": "*"},
+    }, 409)
+    require(api.request("GET", "/api/v1/environments/edge-a")["resolved"]["panel-shell"] == "1.0.0",
+            "deactivating a profile broke an existing environment")
+    listed = api.request("GET", "/api/v1/profiles")
+    require(listed["total"] == 2, "profile listing count is wrong")
+    api.stop()
+    api.start()
+    restarted = api.request("GET", "/api/v1/profiles/edge-stack")
+    require(restarted["state"] == "inactive" and len(restarted["revisions"]) == 3,
+            "profile revision history did not survive restart")
+    require(api.request("GET", "/api/v1/environments/edge-a")["profile_revision"] == 1,
+            "environment provenance did not survive restart")
+    actions = [event["action"] for event in api.request("GET", "/api/v1/events")["items"]]
+    for expected in ("created", "updated", "deactivated", "created_from_profile"):
+        require(expected in actions, f"event stream is missing {expected}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "profiles"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "profiles": profiles}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()
