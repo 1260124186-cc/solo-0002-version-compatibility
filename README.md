@@ -55,8 +55,21 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 当多套环境重复使用同一组根依赖时，可以把约束保存为依赖配置集（profile）。配置集有名称、说明和修订号，**保存时只做语法校验，不求解目录**——即使引用的组件尚不存在或约束无解，配置集也能创建成功；只有在按修订生成环境时，才会针对当前组件目录实际求解。
 
+下面的调用链从空服务开始可原样执行：先建组件、发布满足约束的版本，再使用配置集。
+
 ```sh
-# 创建配置集，返回 revision=1；roots 是完整的根依赖集合
+# 1) 准备组件目录：atlas-core 1/2、render-engine 1/2、panel-shell 1/2
+curl -s http://127.0.0.1:8092/api/v1/components -H 'Content-Type: application/json' -d '{"id":"atlas-core","name":"计算核心"}'
+curl -s http://127.0.0.1:8092/api/v1/components -H 'Content-Type: application/json' -d '{"id":"render-engine","name":"渲染引擎"}'
+curl -s http://127.0.0.1:8092/api/v1/components -H 'Content-Type: application/json' -d '{"id":"panel-shell","name":"面板外壳"}'
+curl -s http://127.0.0.1:8092/api/v1/components/atlas-core/releases -H 'Content-Type: application/json' -d '{"version":"1.0.0","requires":{}}'
+curl -s http://127.0.0.1:8092/api/v1/components/atlas-core/releases -H 'Content-Type: application/json' -d '{"version":"2.0.0","requires":{}}'
+curl -s http://127.0.0.1:8092/api/v1/components/render-engine/releases -H 'Content-Type: application/json' -d '{"version":"1.0.0","requires":{"atlas-core":"^1.0.0"}}'
+curl -s http://127.0.0.1:8092/api/v1/components/render-engine/releases -H 'Content-Type: application/json' -d '{"version":"2.0.0","requires":{"atlas-core":"^2.0.0"}}'
+curl -s http://127.0.0.1:8092/api/v1/components/panel-shell/releases -H 'Content-Type: application/json' -d '{"version":"1.0.0","requires":{"render-engine":"*"}}'
+curl -s http://127.0.0.1:8092/api/v1/components/panel-shell/releases -H 'Content-Type: application/json' -d '{"version":"2.0.0","requires":{"render-engine":"2.0.0"}}'
+
+# 2) 创建配置集，返回 revision=1；roots 是完整的根依赖集合（此时不求解）
 curl -s http://127.0.0.1:8092/api/v1/profiles -H 'Content-Type: application/json' -d '{
   "id": "edge-stack",
   "name": "边缘标准栈",
@@ -64,26 +77,28 @@ curl -s http://127.0.0.1:8092/api/v1/profiles -H 'Content-Type: application/json
   "roots": {"render-engine": "1.0.0", "panel-shell": "*"}
 }'
 
-# 查看配置集（含每个修订的不可变快照）与列表
+# 3) 查看配置集（含每个修订的不可变快照）与列表
 curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack
 curl -s http://127.0.0.1:8092/api/v1/profiles
 
-# 编辑：整体替换名称、说明和 roots，必须携带所基于的修订号，成功后 revision 加一
+# 4) 编辑：整体替换名称、说明和 roots，必须携带所基于的修订号，成功后 revision 变为 2
 curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack -X PATCH \
   -H 'Content-Type: application/json' \
   -d '{"revision":1,"name":"边缘标准栈","description":"放宽约束","roots":{"render-engine":"*","panel-shell":"*"}}'
 
-# 按指定修订生成新环境（省略 profile_revision 时使用当前修订）
+# 5) 按当前修订（2）生成环境：求解得到 panel-shell/render-engine/atlas-core 均为 2.0.0
 curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack/environments \
   -H 'Content-Type: application/json' \
   -d '{"id":"edge-a","name":"边缘环境 A"}'
+# 显式按旧修订 1 生成：render-engine 固定 1.0.0，panel-shell 回溯到 1.0.0
 curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack/environments \
   -H 'Content-Type: application/json' \
   -d '{"id":"edge-old","name":"按旧修订生成","profile_revision":1}'
 
-# 停用配置集（不可恢复），需携带当前修订号
+# 6) 停用配置集（不可恢复），需携带当前修订号；停用后已有环境仍可查看
 curl -s http://127.0.0.1:8092/api/v1/profiles/edge-stack/deactivate \
   -H 'Content-Type: application/json' -d '{"revision":2}'
+# 停用后再生成返回 409 conflict；GET /api/v1/environments/edge-a 仍正常
 ```
 
 生成的环境与普通环境完全一致，另外记录 `profile_id` 和 `profile_revision` 两个来源字段。关键语义：
