@@ -165,15 +165,100 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def precheck(api):
+    populate(api)
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
+    require(env["resolved"]["atlas-core"] == "1.0.0", "environment did not resolve atlas-core 1.0.0")
+    body = {"environment_id": "integration", "base_revision": 1,
+            "roots": {"render-engine": "2.0.0"}, "reason": "评估撤回影响"}
+    created = api.request("POST", "/api/v1/plans", body, 201)
+    ready = api.request("POST", f"/api/v1/plans/{created['id']}/validate", {"revision": 1})
+    require(ready["state"] == "ready", "upgrade plan should become ready")
+
+    def inspect(component, version, expected=200):
+        return api.request("POST",
+                           f"/api/v1/components/{component}/releases/{version}/withdraw-precheck",
+                           {}, expected)
+
+    def node(step):
+        return step["component_id"], step["version"], step.get("constraint", "")
+
+    used = inspect("atlas-core", "1.0.0")
+    revision = used["catalog_revision"]
+    require(revision > 0 and used["release_state"] == "available", "precheck must bind the catalog revision")
+    require(used["withdrawable"] is False, "a release used by an environment is not withdrawable")
+    require(len(used["environments"]) == 1 and len(used["ready_plans"]) == 0,
+            "environment usage must be reported once")
+    impact = used["environments"][0]
+    require(impact["environment_id"] == "integration" and impact["environment_revision"] == 1,
+            "environment identity or revision is wrong")
+    require(impact["roots"] == {"render-engine": "1.0.0"}, "related root dependency is missing")
+    require([node(step) for step in impact["paths"][0]] ==
+            [("render-engine", "1.0.0", ""), ("atlas-core", "1.0.0", "^1.0.0")],
+            "dependency path from root to target is wrong")
+
+    pending = inspect("atlas-core", "2.0.0")
+    require(pending["environments"] == [] and pending["withdrawable"] is True,
+            "an unused release should be withdrawable")
+    require(len(pending["ready_plans"]) == 1, "ready plan containing the version must be reported")
+    plan_impact = pending["ready_plans"][0]
+    require(plan_impact["plan_id"] == created["id"] and plan_impact["environment_id"] == "integration",
+            "ready plan identity is wrong")
+    require(plan_impact["catalog_revision"] == revision and plan_impact["roots"] == {"render-engine": "2.0.0"},
+            "ready plan must carry its catalog revision and roots")
+    require([node(step) for step in plan_impact["paths"][0]] ==
+            [("render-engine", "2.0.0", ""), ("atlas-core", "2.0.0", "^2.0.0")],
+            "plan dependency path is wrong")
+
+    direct = inspect("render-engine", "1.0.0")
+    require([node(step) for step in direct["environments"][0]["paths"][0]] ==
+            [("render-engine", "1.0.0", "")], "a root component should produce a single-node path")
+
+    inspect("missing-core", "1.0.0", 404)
+    inspect("atlas-core", "9.9.9", 404)
+
+    # Precheck is analysis only: it changes neither revisions nor the event stream.
+    events_before = api.request("GET", "/api/v1/events")["latest"]
+    inspect("atlas-core", "1.0.0")
+    inspect("atlas-core", "2.0.0")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1,
+            "precheck mutated an environment")
+    require(api.request("GET", f"/api/v1/plans/{created['id']}")["state"] == "ready",
+            "precheck mutated a plan")
+    require(api.request("GET", "/api/v1/events")["latest"] == events_before,
+            "precheck recorded an event")
+
+    # Once the catalog moves, withdrawing with the precheck revision is rejected.
+    release(api, "atlas-core", "3.0.0")
+    api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw",
+                {"catalog_revision": revision}, 409)
+    current = inspect("atlas-core", "1.0.0")
+    require(current["catalog_revision"] == revision + 1, "precheck did not observe the new catalog revision")
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw",
+                {"catalog_revision": current["catalog_revision"]}, 409)
+
+    free = inspect("atlas-core", "3.0.0")
+    require(free["withdrawable"] is True and free["environments"] == [] and free["ready_plans"] == [],
+            "unused release precheck should be empty and withdrawable")
+    withdrawn = api.request("POST", "/api/v1/components/atlas-core/releases/3.0.0/withdraw",
+                            {"catalog_revision": free["catalog_revision"]})
+    require(withdrawn["state"] == "withdrawn", "bound withdrawal of an unused release failed")
+    release(api, "atlas-core", "4.0.0")
+    withdrawn = api.request("POST", "/api/v1/components/atlas-core/releases/4.0.0/withdraw", {})
+    require(withdrawn["state"] == "withdrawn", "withdrawal without a precheck revision must stay allowed")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "precheck"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade,
+             "precheck": precheck}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

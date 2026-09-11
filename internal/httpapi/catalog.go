@@ -83,12 +83,30 @@ func (a *API) releases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) withdraw(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		CatalogRevision uint64 `json:"catalog_revision,omitempty"`
+	}
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.WithdrawRelease(r.Context(), r.PathValue("id"), r.PathValue("version"), input.CatalogRevision)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
+// withdrawPrecheck is read-only: it reports the impact of withdrawing a release
+// without changing the catalog, environments, plans or events.
+func (a *API) withdrawPrecheck(w http.ResponseWriter, r *http.Request) {
 	var input struct{}
 	if err := decode(w, r, &input); err != nil {
 		fail(w, err)
 		return
 	}
-	result, err := a.service.WithdrawRelease(r.Context(), r.PathValue("id"), r.PathValue("version"))
+	result, err := a.service.WithdrawPrecheck(r.Context(), r.PathValue("id"), r.PathValue("version"))
 	if err != nil {
 		fail(w, err)
 		return

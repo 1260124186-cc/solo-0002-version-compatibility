@@ -51,6 +51,16 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 撤回影响预检
+
+撤回版本前调用 `POST /api/v1/components/{id}/releases/{version}/withdraw-precheck`（请求体为空对象 `{}`）。预检只做分析，不执行撤回，也不改变任何环境、方案或事件。响应包含：
+
+- `catalog_revision`、`generated_at`、`release_state` 与 `withdrawable`：预检所绑定的目录修订、生成时间、版本当前状态及按现有撤回规则（被环境使用即不可撤回）计算的结论。
+- `environments`：解析集合包含该版本的环境，每项给出环境修订号、相关根依赖（`roots`），以及每个可达根组件到目标版本的一条最短依赖路径 `paths`。路径节点依次为 `component_id`、`version`，非根节点还带有前驱施加的 `constraint`；根组件自身命中目标时为单节点路径。
+- `ready_plans`：解析结果包含该版本的 ready（尚未应用）方案，含方案与环境标识、方案修订号、方案所绑定的 `catalog_revision`、根依赖及同样的依赖路径。撤回会推进目录修订，这类方案随后必须重新验证才能应用。
+
+预检结论只对响应中的 `catalog_revision` 有效。目录变化后必须重新预检，不能把过期结论当作现状。撤回接口的请求体现在可选携带 `"catalog_revision": <预检修订号>`；提供后服务会在撤回前核对目录修订，目录已变化时返回 409，要求重新预检。不传该字段时撤回行为与之前一致。版本或组件不存在时预检返回 404；已撤回的版本仍可预检，其 `release_state` 为 `withdrawn`、`withdrawable` 为 `false`。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -59,6 +69,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET /components/{id} | 获取组件详情 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
+| POST /components/{id}/releases/{version}/withdraw-precheck | 只读预检撤回影响并绑定目录修订 |
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
@@ -94,9 +105,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py precheck
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回与撤回影响预检、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

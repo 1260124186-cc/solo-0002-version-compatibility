@@ -103,9 +103,19 @@ func (s *Service) ListReleases(ctx context.Context, id string) ([]domain.Release
 	return items, nil
 }
 
-func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (domain.Release, error) {
+// WithdrawPrecheckInput optionally carries the catalog revision from a previous
+// withdrawal precheck. When set, a newer catalog revision is rejected so that a
+// stale precheck result can never be acted upon as the current state.
+type WithdrawPrecheckInput struct {
+	CatalogRevision uint64 `json:"catalog_revision,omitempty"`
+}
+
+func (s *Service) WithdrawRelease(ctx context.Context, id, version string, expectedCatalogRevision uint64) (domain.Release, error) {
 	var result domain.Release
 	err := s.repo.Update(ctx, func(state *repository.State) error {
+		if expectedCatalogRevision != 0 && state.Catalog.Revision != expectedCatalogRevision {
+			return domain.Conflict("catalog revision is %d, precheck was based on %d; rerun the withdrawal precheck", state.Catalog.Revision, expectedCatalogRevision)
+		}
 		release, exists := state.Catalog.Releases[id][version]
 		if !exists {
 			return domain.Missing("release", id+"@"+version)
