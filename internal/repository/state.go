@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"encoding/json"
 	"time"
 
 	"solo-0002-version-compatibility/internal/domain"
@@ -35,19 +34,6 @@ func NewState() *State {
 		Plans:        make(map[string]domain.Plan),
 		Events:       make([]Event, 0),
 	}
-}
-
-// Clone keeps callers from sharing mutable maps across a commit boundary.
-func (s *State) Clone() (*State, error) {
-	data, err := json.Marshal(s)
-	if err != nil {
-		return nil, err
-	}
-	var result State
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
 }
 
 func (s *State) Record(kind, id, action string, at time.Time) {

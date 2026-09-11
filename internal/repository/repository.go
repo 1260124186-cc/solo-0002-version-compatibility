@@ -42,7 +42,7 @@ func (r *Repository) Snapshot(ctx context.Context) (*State, error) {
 	if r.closed {
 		return nil, fmt.Errorf("repository is closed")
 	}
-	return r.state.Clone()
+	return r.state.Clone(), nil
 }
 
 // Update serializes writers and makes failure atomic for memory and disk.
@@ -59,10 +59,7 @@ func (r *Repository) Update(ctx context.Context, mutate func(*State) error) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	candidate, err := r.state.Clone()
-	if err != nil {
-		return err
-	}
+	candidate := r.state.Clone()
 	if err := mutate(candidate); err != nil {
 		return err
 	}
