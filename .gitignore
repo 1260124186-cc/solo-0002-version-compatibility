@@ -1,4 +1,5 @@
 /build/
 /var/
+__pycache__/
 *.tmp
 .DS_Store

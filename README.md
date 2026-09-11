@@ -4,7 +4,7 @@
 
 ## 运行
 
-需要 Go 1.23 或更高版本，支持 Linux、macOS。服务本身没有第三方依赖，无须网络数据库。HTTP 冒烟检查还需要 Python 3。
+需要 Go 1.23 或更高版本，支持 Linux、macOS。服务本身没有第三方依赖，无须网络数据库。统一验证入口与 HTTP 冒烟检查还需要 Python 3。
 
 ```sh
 go build -o build/compat-server ./cmd/server
@@ -90,15 +90,19 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 ## 验证与测试边界
 
+统一验证入口按固定顺序执行全部检查，任一阶段失败即停止，报告所停阶段并以非零状态退出：
+
 ```sh
-python3 checks/workflow.py catalog
-python3 checks/workflow.py resolve
-python3 checks/workflow.py upgrade
+python3 checks/verify.py
 ```
+
+阶段依次为 `go build -o build/compat-server ./cmd/server`、`go vet ./...`，以及 catalog、resolve、upgrade 三条 HTTP 冒烟检查（等价于分别运行 `python3 checks/workflow.py <名称>`）。冒烟检查启动的临时服务与临时数据在正常结束、失败或中断时都会清理。
+
+GitHub 持续集成（`.github/workflows/ci.yml`）对推送与拉取请求运行同一入口，矩阵覆盖 Linux 与 macOS，以及 go.mod 声明的最低版本 Go 1.23 和当前稳定版 Go。
 
 这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
 
-测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
+测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。统一验证入口因此不包含 `go test`：当前没有测试文件，空运行不能作为覆盖证明。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
 ## 目录
 
@@ -110,6 +114,6 @@ python3 checks/workflow.py upgrade
 - `internal/service`：组件、环境、方案与事件流程。
 - `internal/httpapi`：HTTP 路由、请求边界及响应。
 - `internal/config`：环境配置。
-- `checks`：公开 HTTP 运行检查。
+- `checks`：统一验证入口与公开 HTTP 运行检查。
 
 当前不提供网页界面、第三方组件源接入、多实例共享数据、方案清理接口或预发行版本支持。版本内容不可修改，撤回不可逆；采用新的版本号修订依赖。
