@@ -8,7 +8,13 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema < 1 || s.Schema > 2 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+		return fmt.Errorf("unsupported schema or missing collections")
+	}
+	if s.Schema == 1 && s.Snapshots != nil {
+		return fmt.Errorf("schema 1 state must not contain snapshots")
+	}
+	if s.Schema == 2 && s.Snapshots == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
@@ -88,6 +94,39 @@ func validateState(s *State) error {
 			}
 		default:
 			return fmt.Errorf("invalid plan state")
+		}
+	}
+	for id, revisions := range s.Snapshots {
+		env, ok := s.Environments[id]
+		if !ok {
+			return fmt.Errorf("orphan snapshot collection")
+		}
+		if len(revisions) == 0 || len(revisions) > int(env.Revision) {
+			return fmt.Errorf("invalid snapshot count for environment %s", id)
+		}
+		for revision, snapshot := range revisions {
+			if snapshot.EnvironmentID != id || snapshot.Revision != revision || revision == 0 || revision > env.Revision {
+				return fmt.Errorf("snapshot identity or revision mismatch")
+			}
+			if snapshot.CatalogRevision == 0 || snapshot.CatalogRevision > s.Catalog.Revision {
+				return fmt.Errorf("snapshot references an invalid catalog revision")
+			}
+			switch snapshot.Origin {
+			case domain.SnapshotBaseline, domain.SnapshotCreated:
+				if snapshot.PlanID != "" {
+					return fmt.Errorf("snapshot must not reference a plan")
+				}
+			case domain.SnapshotApplied:
+				plan, exists := s.Plans[snapshot.PlanID]
+				if !exists || plan.State != domain.Applied || plan.EnvironmentID != id {
+					return fmt.Errorf("snapshot references an invalid plan")
+				}
+			default:
+				return fmt.Errorf("invalid snapshot origin")
+			}
+			if err := domain.ValidateSnapshot(snapshot); err != nil {
+				return err
+			}
 		}
 	}
 	var previous uint64

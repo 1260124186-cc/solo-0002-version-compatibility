@@ -38,6 +38,12 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 			return domain.Limit("environment capacity reached")
 		}
 		current.Environments[input.ID] = env
+		snapshot := domain.CaptureSnapshot(env, current.Catalog, at)
+		snapshot.Origin = domain.SnapshotCreated
+		if current.Snapshots[input.ID] == nil {
+			current.Snapshots[input.ID] = make(map[uint64]domain.EnvironmentSnapshot)
+		}
+		current.Snapshots[input.ID][env.Revision] = snapshot
 		current.Record("environment", input.ID, "created", at)
 		return nil
 	})

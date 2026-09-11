@@ -30,6 +30,17 @@ func Open(directory string) (*Repository, error) {
 		releaseLock(lock)
 		return nil, err
 	}
+	if state.Schema == 1 {
+		migrate(state)
+		if err := validateState(state); err != nil {
+			releaseLock(lock)
+			return nil, fmt.Errorf("invalid migrated state: %w", err)
+		}
+		if err := writeState(path, state); err != nil {
+			releaseLock(lock)
+			return nil, err
+		}
+	}
 	return &Repository{state: state, path: path, lock: lock}, nil
 }
 

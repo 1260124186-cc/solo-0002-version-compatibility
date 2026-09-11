@@ -16,23 +16,25 @@ type Event struct {
 }
 
 type State struct {
-	Schema       int                           `json:"schema"`
-	Revision     uint64                        `json:"revision"`
-	Catalog      domain.Catalog                `json:"catalog"`
-	Environments map[string]domain.Environment `json:"environments"`
-	Plans        map[string]domain.Plan        `json:"plans"`
-	Events       []Event                       `json:"events"`
+	Schema       int                                              `json:"schema"`
+	Revision     uint64                                           `json:"revision"`
+	Catalog      domain.Catalog                                   `json:"catalog"`
+	Environments map[string]domain.Environment                    `json:"environments"`
+	Plans        map[string]domain.Plan                           `json:"plans"`
+	Snapshots    map[string]map[uint64]domain.EnvironmentSnapshot `json:"snapshots"`
+	Events       []Event                                          `json:"events"`
 }
 
 func NewState() *State {
 	return &State{
-		Schema: 1,
+		Schema: 2,
 		Catalog: domain.Catalog{
 			Components: make(map[string]domain.Component),
 			Releases:   make(map[string]map[string]domain.Release),
 		},
 		Environments: make(map[string]domain.Environment),
 		Plans:        make(map[string]domain.Plan),
+		Snapshots:    make(map[string]map[uint64]domain.EnvironmentSnapshot),
 		Events:       make([]Event, 0),
 	}
 }

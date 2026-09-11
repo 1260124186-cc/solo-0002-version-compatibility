@@ -45,6 +45,13 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		plan.UpdatedAt = at
 		state.Environments[env.ID] = env
 		state.Plans[id] = plan
+		snapshot := domain.CaptureSnapshot(env, state.Catalog, at)
+		snapshot.Origin = domain.SnapshotApplied
+		snapshot.PlanID = id
+		if state.Snapshots[env.ID] == nil {
+			state.Snapshots[env.ID] = make(map[uint64]domain.EnvironmentSnapshot)
+		}
+		state.Snapshots[env.ID][env.Revision] = snapshot
 		state.Record("plan", id, "applied", at)
 		result = AppliedResult{Plan: plan, Environment: env}
 		return nil

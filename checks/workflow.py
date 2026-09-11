@@ -137,6 +137,10 @@ def resolve(api):
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
 
 
+def catalog_revision(api):
+    return api.request("GET", "/api/v1/components")["catalog_revision"]
+
+
 def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
@@ -159,10 +163,53 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+
+    snapshots = api.request("GET", "/api/v1/environments/integration/snapshots")
+    require(snapshots["total"] == 2, "creation and application must each capture a snapshot")
+    initial, current = snapshots["items"]
+    require(initial["revision"] == 1 and initial["origin"] == "created", "missing creation snapshot")
+    require(current["revision"] == 2 and current["origin"] == "applied" and current["plan_id"] == first["id"], "missing application snapshot")
+    require(initial["roots"] == {"render-engine": "1.0.0"} and initial["resolved"]["atlas-core"] == "1.0.0", "creation snapshot content is wrong")
+    require(initial["releases"]["render-engine"] == {"version": "1.0.0", "requires": {"atlas-core": "^1.0.0"}}, "snapshot lost dependency definitions")
+    revision = catalog_revision(api)
+    require(current["catalog_revision"] == revision and initial["catalog_revision"] < revision, "snapshot catalog revisions are wrong")
+    require(api.request("GET", "/api/v1/environments/integration/snapshots/2")["captured_at"] == current["captured_at"], "snapshot lookup by revision failed")
+    api.request("GET", "/api/v1/environments/integration/snapshots/3", expected=404)
+    api.request("GET", "/api/v1/environments/ghost-env/snapshots", expected=404)
+    api.request("POST", "/api/v1/environments/integration/snapshots/1/verify", {"catalog_revision": 0}, 400)
+    api.request("POST", "/api/v1/environments/integration/snapshots/1/verify", {"catalog_revision": revision + 1}, 409)
+    verified = api.request("POST", "/api/v1/environments/integration/snapshots/1/verify", {"catalog_revision": revision})
+    require(verified["holds"] and verified["issues"] == [], "intact snapshot did not verify")
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {})
+    revision = catalog_revision(api)
+    verified = api.request("POST", "/api/v1/environments/integration/snapshots/1/verify", {"catalog_revision": revision})
+    require(not verified["holds"] and any("atlas-core@1.0.0" in issue for issue in verified["issues"]), "withdrawal did not break the old snapshot")
+    verified = api.request("POST", "/api/v1/environments/integration/snapshots/2/verify", {"catalog_revision": revision})
+    require(verified["holds"], "current snapshot must still hold")
+
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration/snapshots")["total"] == 2, "snapshots lost after restart")
+
+    api.stop()
+    state_path = api.directory / "state" / "state.json"
+    legacy = json.loads(state_path.read_text())
+    del legacy["snapshots"]
+    legacy["schema"] = 1
+    state_path.write_text(json.dumps(legacy))
+    api.start()
+    snapshots = api.request("GET", "/api/v1/environments/integration/snapshots")
+    require(snapshots["total"] == 1, "migration must establish exactly one baseline")
+    baseline = snapshots["items"][0]
+    require(baseline["revision"] == 2 and baseline["origin"] == "baseline", "baseline did not start from the current state")
+    require(baseline["resolved"]["atlas-core"] == "2.0.0", "baseline content does not match the current environment")
+    api.request("GET", "/api/v1/environments/integration/snapshots/1", expected=404)
+    verified = api.request("POST", "/api/v1/environments/integration/snapshots/2/verify", {"catalog_revision": catalog_revision(api)})
+    require(verified["holds"], "baseline must hold against the current catalog")
+    migrated = json.loads(state_path.read_text())
+    require(migrated["schema"] == 2 and "snapshots" in migrated, "migration was not persisted")
 
 
 def main():

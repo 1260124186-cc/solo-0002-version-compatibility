@@ -51,6 +51,20 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 环境快照
+
+环境创建时以及每次应用方案时，服务在同一持久化事务内保存一份不可变快照：与环境更新一起成功或一起失败，不会出现环境已升级却缺少对应快照的情况。快照记录当时的根依赖、解析集合、每个已解析版本的依赖定义及目录修订号；`origin` 标记来源（`created`、`applied`、`baseline`），应用产生的快照还带 `plan_id`。
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/environments/staging/snapshots
+curl -s http://127.0.0.1:8092/api/v1/environments/staging/snapshots/1
+curl -s http://127.0.0.1:8092/api/v1/environments/staging/snapshots/1/verify -H 'Content-Type: application/json' -d '{"catalog_revision":4}'
+```
+
+快照按环境修订号索引，分页列表按修订号升序返回。`verify` 校验快照在给定目录修订下是否仍然成立：目录修订号与当前不一致返回 409；一致时逐项核对快照内部闭包、所引用的版本是否仍存在且可用、依赖定义是否与目录一致，结果含 `holds` 与 `issues`，用于判断旧状态能否按原样复现。校验只读，不执行回滚。
+
+从 schema 1 状态文件启动时，服务在打开数据目录后迁移为 schema 2：为每个已有环境按当前状态捕获一份 `baseline` 起点快照并立即持久化，更早的修订不会补造。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,6 +76,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| GET /environments/{id}/snapshots | 按修订号升序分页查看历史快照 |
+| GET /environments/{id}/snapshots/{revision} | 查看指定修订的不可变快照 |
+| POST /environments/{id}/snapshots/{revision}/verify | 校验快照在给定目录修订下是否仍成立 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -86,7 +103,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 服务使用进程独占锁，两个进程不能共享同一数据目录。状态在 `state.json` 中保存，写入临时文件并执行 fsync 后原子替换。替换成功才更新内存；目录 fsync 尽力执行，因此极端断电持久性仍取决于宿主文件系统。数据上限 64 MiB。
 
-启动会校验 schema、引用关系、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制。
+启动会校验 schema、引用关系、选择结果、快照闭包与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 2；schema 1 文件在启动时自动迁移，为已有环境从当前状态建立 baseline 快照，除此之外不提供跨版本迁移机制。
 
 ## 验证与测试边界
 
