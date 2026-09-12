@@ -159,10 +159,55 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    third = api.request("POST", "/api/v1/plans",
+                        {"environment_id": "integration", "base_revision": 2,
+                         "roots": {"render-engine": "2.0.0"}, "reason": "跟踪目录变化"}, 201)
+    third_path = "/api/v1/plans/" + third["id"]
+    require(third["stale"] is False and third["catalog_revision"] > 0, "fresh plan must record the catalog revision")
+    api.request("POST", third_path + "/expire", {"revision": 1}, 409)
+    release(api, "atlas-core", "4.0.0")
+    require(api.request("GET", third_path)["stale"] is True, "catalog change did not make the plan stale")
+    api.request("POST", third_path + "/expire", {"revision": 2}, 409)
+    expired = api.request("POST", third_path + "/expire", {"revision": 1})
+    require(expired["state"] == "expired" and expired["stale"] is False, "plan expiry failed")
+    api.request("POST", third_path + "/validate", {"revision": expired["revision"]}, 409)
+    api.request("POST", third_path + "/cancel", {"revision": expired["revision"]}, 409)
+    api.request("POST", third_path + "/expire", {"revision": expired["revision"]}, 409)
+    events = api.request("GET", "/api/v1/events?entity_id=" + third["id"])["items"]
+    require([event["action"] for event in events] == ["created", "expired"], "expiry event missing")
+    fourth = api.request("POST", "/api/v1/plans",
+                         {"environment_id": "integration", "base_revision": 2,
+                          "roots": {"render-engine": "2.0.0"}, "reason": "保持当前版本"}, 201)
+    fifth = api.request("POST", "/api/v1/plans",
+                        {"environment_id": "integration", "base_revision": 2,
+                         "roots": {"render-engine": "1.0.0"}, "reason": "回退验证"}, 201)
+    fourth_path = "/api/v1/plans/" + fourth["id"]
+    fifth_path = "/api/v1/plans/" + fifth["id"]
+    ready4 = api.request("POST", fourth_path + "/validate", {"revision": 1})
+    ready5 = api.request("POST", fifth_path + "/validate", {"revision": 1})
+    require(len(ready5["changes"]) == 2, "downgrade plan should carry two changes")
+    applied = api.request("POST", fourth_path + "/apply", {"revision": ready4["revision"]})
+    require(applied["environment"]["revision"] == 3, "no-op plan application failed")
+    require(api.request("GET", fifth_path)["stale"] is True, "environment advance did not make the plan stale")
+    stale_ids = [p["id"] for p in api.request("GET", "/api/v1/plans?stale=true")["items"]]
+    require(stale_ids == [fifth["id"]], "stale filter did not isolate the stale plan")
+    fresh_ids = [p["id"] for p in api.request("GET", "/api/v1/plans?stale=false")["items"]]
+    require(fifth["id"] not in fresh_ids and third["id"] in fresh_ids, "stale=false filter failed")
+    api.request("GET", "/api/v1/plans?stale=maybe", expected=400)
+    expired = api.request("POST", fifth_path + "/expire", {"revision": ready5["revision"]})
+    require(expired["state"] == "expired", "ready plan expiry failed")
+    require(expired["resolved"] == ready5["resolved"] and expired["changes"] == ready5["changes"],
+            "expiry rewrote plan history")
+    expired_ids = {p["id"] for p in api.request("GET", "/api/v1/plans?state=expired")["items"]}
+    require(expired_ids == {third["id"], fifth["id"]}, "state=expired filter failed")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 3, "environment revision lost after restart")
+    require(api.request("GET", third_path)["state"] == "expired", "expired state lost after restart")
+    kept = api.request("GET", fifth_path)
+    require(kept["state"] == "expired" and kept["resolved"] == ready5["resolved"] and len(kept["changes"]) == 2,
+            "expired plan history lost after restart")
 
 
 def main():

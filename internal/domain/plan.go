@@ -7,6 +7,7 @@ const (
 	Ready     = "ready"
 	Applied   = "applied"
 	Cancelled = "cancelled"
+	Expired   = "expired"
 )
 
 type Change struct {
@@ -54,6 +55,23 @@ func (p Plan) CanCancel() error {
 		return Conflict("cannot cancel a %s plan", p.State)
 	}
 	return nil
+}
+
+func (p Plan) CanExpire() error {
+	if p.State != Draft && p.State != Ready {
+		return Conflict("cannot expire a %s plan", p.State)
+	}
+	return nil
+}
+
+// Stale reports whether a draft or ready plan has been superseded: the
+// environment moved past the plan's BaseRevision, or the catalog moved past
+// the plan's CatalogRevision. Terminal states are never stale.
+func (p Plan) Stale(environmentRevision, catalogRevision uint64) bool {
+	if p.State != Draft && p.State != Ready {
+		return false
+	}
+	return p.BaseRevision < environmentRevision || p.CatalogRevision < catalogRevision
 }
 
 func (p Plan) CheckRevision(revision uint64) error {

@@ -86,6 +86,13 @@ func validateState(s *State) error {
 			if err := ValidateSelection(s.Catalog, plan.Roots, plan.Resolved, false); err != nil {
 				return err
 			}
+		case domain.Expired:
+			// An expired plan keeps the solved content it had when marked.
+			if len(plan.Resolved) > 0 {
+				if err := ValidateSelection(s.Catalog, plan.Roots, plan.Resolved, false); err != nil {
+					return err
+				}
+			}
 		default:
 			return fmt.Errorf("invalid plan state")
 		}

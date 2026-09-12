@@ -43,13 +43,19 @@ curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json'
 curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/json' -d '{"id":"staging","name":"预演环境","roots":{"render-unit":"1.0.0"}}'
 ```
 
-新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots` 及 `reason`。返回的方案最初为 `draft`、`revision=1`。依次调用：
+新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots` 及 `reason`。返回的方案最初为 `draft`、`revision=1`，并记录创建时的 `catalog_revision`。依次调用：
 
 1. `POST /api/v1/plans/{id}/validate`，发送 `{"revision":1}`。成功返回 `ready` 方案，其 `changes` 描述新增、移除、升级或降级；后续请求必须使用返回的新修订号。
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
 3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
+
+## 方案过期清理
+
+方案记录两个基准修订号：`base_revision` 是创建时的环境修订号；`catalog_revision` 是方案所依据的目录修订号，draft 在创建时记录当前目录修订号，validate 成功后更新为求解所用的目录修订号。对 draft 或 ready 方案，当 `environment.revision > plan.base_revision`（环境修订已被新修订取代）或 `catalog.revision > plan.catalog_revision`（目录修订已过旧）时方案即为过期，方案响应中的只读字段 `stale` 为 `true`；applied、cancelled、expired 为终态，`stale` 恒为 `false`。
+
+清理是显式操作：对确实过期的方案调用 `POST /api/v1/plans/{id}/expire`（请求体为当前方案修订号），状态变为终态 `expired`；仍未过期的方案返回 409。服务不会在任何读取或写入中自动过期方案。每次过期记录一条 `expired` 事件，可经 `GET /api/v1/events?entity_id=` 追溯；方案的 `roots`、`resolved`、`changes`、`reason` 等历史内容原样保留，过期不删除或改写任何内容。过期方案不能再验证、应用或取消；已应用和已取消的方案不参与过期。列表可用 `state=expired` 或 `stale=true|false` 筛选，区分过期与仍可用方案。
 
 ## 接口索引
 
@@ -67,9 +73,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
+| POST /plans/{id}/expire | 将已过期的 draft 或 ready 方案标记为 expired |
 | GET /events | 按序号增量读取变更事件 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选，也可用 `stale=true|false` 按是否过期筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
 
 ## 约束及失败行为
 
@@ -96,7 +103,7 @@ python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用、取消及过期标记。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
@@ -112,4 +119,4 @@ python3 checks/workflow.py upgrade
 - `internal/config`：环境配置。
 - `checks`：公开 HTTP 运行检查。
 
-当前不提供网页界面、第三方组件源接入、多实例共享数据、方案清理接口或预发行版本支持。版本内容不可修改，撤回不可逆；采用新的版本号修订依赖。
+当前不提供网页界面、第三方组件源接入、多实例共享数据或预发行版本支持。版本内容不可修改，撤回不可逆；采用新的版本号修订依赖。

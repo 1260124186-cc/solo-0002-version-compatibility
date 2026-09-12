@@ -23,7 +23,7 @@ func (a *API) createPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) plans(w http.ResponseWriter, r *http.Request) {
-	if err := queryOnly(r, "offset", "limit", "environment_id", "state"); err != nil {
+	if err := queryOnly(r, "offset", "limit", "environment_id", "state", "stale"); err != nil {
 		fail(w, err)
 		return
 	}
@@ -32,7 +32,17 @@ func (a *API) plans(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	items, err := a.service.ListPlans(r.Context(), r.URL.Query().Get("environment_id"), r.URL.Query().Get("state"))
+	var stale *bool
+	switch raw := r.URL.Query().Get("stale"); raw {
+	case "":
+	case "true", "false":
+		value := raw == "true"
+		stale = &value
+	default:
+		fail(w, domain.Invalid("stale must be true or false"))
+		return
+	}
+	items, err := a.service.ListPlans(r.Context(), r.URL.Query().Get("environment_id"), r.URL.Query().Get("state"), stale)
 	if err != nil {
 		fail(w, err)
 		return
@@ -84,6 +94,20 @@ func (a *API) cancelPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := a.service.CancelPlan(r.Context(), r.PathValue("id"), input.Revision)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
+func (a *API) expirePlan(w http.ResponseWriter, r *http.Request) {
+	var input domain.RevisionInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.ExpirePlan(r.Context(), r.PathValue("id"), input.Revision)
 	if err != nil {
 		fail(w, err)
 		return
