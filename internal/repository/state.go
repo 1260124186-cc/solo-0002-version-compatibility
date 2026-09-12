@@ -63,3 +63,16 @@ func (s *State) Record(kind, id, action string, at time.Time) {
 		s.Events = s.Events[len(s.Events)-10000:]
 	}
 }
+
+// upgradeState backfills fields introduced after the baseline schema so
+// state files written by earlier binaries stay readable. Environments
+// without a name revision predate the rename capability and are treated
+// as never renamed, i.e. the initial name revision 1.
+func upgradeState(s *State) {
+	for id, env := range s.Environments {
+		if env.NameRevision == 0 {
+			env.NameRevision = 1
+			s.Environments[id] = env
+		}
+	}
+}

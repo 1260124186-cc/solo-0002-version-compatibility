@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -16,8 +17,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RunningService:
-    def __init__(self, directory):
+    def __init__(self, directory, binary=None):
         self.directory = Path(directory)
+        self.binary = Path(binary) if binary is not None else ROOT / "build/compat-server"
         self.process = None
         self.log = None
         self.base = ""
@@ -27,7 +29,7 @@ class RunningService:
         env = dict(os.environ, COMPAT_ADDRESS="127.0.0.1:0",
                    COMPAT_DATA_DIR=str(self.directory / "state"),
                    COMPAT_MAX_STEPS="50000", COMPAT_REQUEST_TIMEOUT="10s")
-        self.process = subprocess.Popen([str(ROOT / "build/compat-server")],
+        self.process = subprocess.Popen([str(self.binary)],
                                         env=env, stdout=self.log, stderr=self.log)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -80,6 +82,21 @@ class RunningService:
 def require(condition, detail):
     if not condition:
         raise RuntimeError(detail)
+
+
+def build_baseline(directory):
+    """Build the baseline binary from the repository root commit."""
+    if shutil.which("go") is None:
+        raise RuntimeError("compat check requires the go toolchain on PATH")
+    commit = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
+                            cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    source = Path(directory) / "baseline-src"
+    source.mkdir()
+    archive = subprocess.run(["git", "archive", commit], cwd=ROOT, stdout=subprocess.PIPE, check=True)
+    subprocess.run(["tar", "-x", "-C", str(source)], input=archive.stdout, check=True)
+    binary = Path(directory) / "baseline-server"
+    subprocess.run(["go", "build", "-o", str(binary), "./cmd/server"], cwd=source, check=True)
+    return binary
 
 
 def component(api, name):
@@ -181,15 +198,50 @@ def upgrade(api):
     require(actions == ["created", "renamed", "renamed"], "rename events missing or out of order")
 
 
+def compat(api):
+    # The baseline binary predates the rename capability and writes state
+    # without a name revision; the current binary must read it in place.
+    populate(api)
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "legacy", "name": "旧环境", "roots": {"render-engine": "1.0.0"}}, 201)
+    require("name_revision" not in env, "baseline response already carries a name revision")
+    plan = api.request("POST", "/api/v1/plans", {"environment_id": "legacy", "base_revision": 1,
+                                                 "roots": {"render-engine": "2.0.0"}, "reason": "升级兼容集合"}, 201)
+    ready = api.request("POST", "/api/v1/plans/" + plan["id"] + "/validate", {"revision": 1})
+    require(ready["state"] == "ready", "baseline plan validation failed")
+    api.stop()
+    persisted = json.loads((api.directory / "state" / "state.json").read_text())
+    require("name_revision" not in persisted["environments"]["legacy"],
+            "baseline state already carries a name revision")
+    api.binary = ROOT / "build/compat-server"
+    api.start()
+    env = api.request("GET", "/api/v1/environments/legacy")
+    require(env["name"] == "旧环境" and env["revision"] == 1 and env["name_revision"] == 1,
+            "old environment was not upgraded to the initial name revision")
+    require(env["resolved"]["atlas-core"] == "1.0.0", "old environment resolution changed")
+    applied = api.request("POST", "/api/v1/plans/" + plan["id"] + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 2, "a plan made ready by the baseline could not be applied")
+    actions = [event["action"] for event in api.request("GET", "/api/v1/events?entity_id=legacy")["items"]]
+    require(actions == ["created"], "baseline events lost after upgrade")
+    renamed = api.request("POST", "/api/v1/environments/legacy/rename", {"name": "旧环境-改", "revision": 1})
+    require(renamed["name_revision"] == 2 and renamed["revision"] == 2, "rename on an old environment misbehaved")
+    api.request("POST", "/api/v1/environments/legacy/rename", {"name": "并发名称", "revision": 1}, 409)
+    api.stop()
+    api.start()
+    env = api.request("GET", "/api/v1/environments/legacy")
+    require(env["name"] == "旧环境-改" and env["name_revision"] == 2, "upgraded state did not survive restart")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "compat"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
-        api = RunningService(directory)
+        binary = build_baseline(directory) if args.workflow == "compat" else None
+        api = RunningService(directory, binary)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "compat": compat}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()
