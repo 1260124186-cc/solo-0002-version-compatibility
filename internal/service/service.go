@@ -16,8 +16,12 @@ type Service struct {
 	solver resolution.Solver
 }
 
-func New(repo *repository.Repository, maxSteps int) *Service {
-	return &Service{repo: repo, solver: resolution.Solver{MaxSteps: maxSteps, MaxNodes: 128}}
+func New(repo *repository.Repository, maxSteps int) (*Service, error) {
+	resumeKey, err := repo.ResumeKey()
+	if err != nil {
+		return nil, err
+	}
+	return &Service{repo: repo, solver: resolution.Solver{MaxSteps: maxSteps, MaxNodes: 128, ResumeKey: resumeKey}}, nil
 }
 
 func freshID() (string, error) {
@@ -35,7 +39,7 @@ func (s *Service) Resolve(ctx context.Context, input domain.ResolutionInput) (do
 	if err != nil {
 		return domain.Resolution{}, err
 	}
-	return s.solver.Resolve(ctx, snapshot.Catalog, input.Roots)
+	return s.solver.ResolveRequest(ctx, snapshot.Catalog, input)
 }
 
 func checkCatalog(revision uint64, state *repository.State) error {

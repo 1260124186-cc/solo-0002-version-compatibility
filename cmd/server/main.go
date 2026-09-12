@@ -42,8 +42,12 @@ func run(logger *slog.Logger) error {
 	defer listener.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	svc, err := service.New(repo, cfg.MaxSteps)
+	if err != nil {
+		return err
+	}
 	server := &http.Server{
-		Handler:           httpapi.New(service.New(repo, cfg.MaxSteps), logger, cfg.RequestTimeout),
+		Handler:           httpapi.New(svc, logger, cfg.RequestTimeout),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       cfg.RequestTimeout,
 		WriteTimeout:      cfg.RequestTimeout + 2*time.Second,

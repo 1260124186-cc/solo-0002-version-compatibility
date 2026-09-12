@@ -37,6 +37,46 @@ curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json'
 
 求解响应的 `resolved` 包含 `render-unit=1.0.0` 和 `compute-core=1.0.0`，`edges` 给出传递依赖边，`steps` 给出搜索步骤，`catalog_revision` 标记所用目录版本。求解只计算结果，不改变任何环境。
 
+### 步数预算与续算
+
+默认情况下，求解在服务器配置的总步数上限（`COMPAT_MAX_STEPS`）内一次完成；环境创建与方案验证等内部调用不允许分页，仍以 422 `limit_exceeded` 作为硬错误。直接调用 `/api/v1/resolve` 时可在请求中声明本调用的 `step_budget`（1 到总上限之间）。搜索在耗尽该预算时**不返回笼统超限错误**，而是返回 200：
+
+```json
+{
+  "catalog_revision": 7,
+  "status": "budget_exhausted",
+  "complete": false,
+  "resolved": {},
+  "edges": [],
+  "steps": 50,
+  "confirmed": {
+    "roots": {"render-unit": "*", "compute-core": "1.0.0"},
+    "steps": 50,
+    "conflicts": []
+  },
+  "provisional": {
+    "selected": {"compute-core": "1.0.0"},
+    "edges": []
+  },
+  "continuation_token": "…"
+}
+```
+
+携带 `{"continuation_token": "…", "step_budget": 50}` 再次调用即可续算；不提供 `step_budget` 表示在剩余全局上限内尽量一次算完。分页累计步数仍受 `COMPAT_MAX_STEPS` 约束，到达总上限时续算返回与一次性求解相同的 422 `limit_exceeded`，不会因为分页而放大算力。
+
+续算结果与一次性求解严格一致：续算完成时的 `resolved`、`edges`、总 `steps` 以及最终冲突证据，与用同样根约束直接一次求解相同（求解顺序固定为组件标识字典序、候选版本降序）。token 是自包含的不透明字符串（HMAC 签名、防篡改），不依赖任何进程内存状态，因此服务重启后仍可续算；但它绑定目录修订号和求解相关目录内容的指纹，**目录一旦发生变化（新增/撤回版本等），旧 token 立即失效**，续算返回 409，调用方必须按新目录重新求解。
+
+关于中间结果，需要区分“已确认”和“仅供观察”：
+
+- **已确认（`confirmed`，可作为事实使用）**：
+  - `roots`：本次求解锁定的根约束（来自请求或 token）。
+  - `steps`：该确定性搜索到此为止已经执行的步数；跨页单调累计。
+  - `conflicts`：搜索中已经实际遇到并去重的约束证据（最多 8 条）。它们是“确实发生过的失败证据”，在续算中保留；但**不是**不可满足性的完整证明。只有最终 422 `no_solution` 响应携带的冲突才表示整个问题无解。
+- **不能当作最终答案（`provisional`）**：
+  - `provisional.selected` / `provisional.edges`：暂停时回溯栈里的当前分支选择，只满足“到目前为止传播到的部分约束”，可能在下一步因新依赖或回溯而整体改变或消失。
+  - 暂停响应的顶层 `resolved` 恒为空对象、`edges` 恒为空数组；完整解只出现在 `complete=true`（`status="complete"`）的响应中。调用方不得把 `provisional` 写入环境或方案。
+- 组件节点上限（128）与一次性求解相同，在每个搜索调用点检查；超出时无论是否分页都返回 422 `limit_exceeded`，续算不改变该行为，也不改变 `no_solution` 的冲突证据格式与上限。
+
 创建环境：
 
 ```sh
