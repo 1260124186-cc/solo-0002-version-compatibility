@@ -49,6 +49,20 @@ func (a *API) plan(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, result)
 }
 
+func (a *API) previewPlan(w http.ResponseWriter, r *http.Request) {
+	var input domain.PlanPreviewInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.PreviewPlan(r.Context(), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
 func (a *API) validatePlan(w http.ResponseWriter, r *http.Request) {
 	var input domain.RevisionInput
 	if err := decode(w, r, &input); err != nil {

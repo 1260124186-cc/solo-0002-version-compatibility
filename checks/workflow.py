@@ -141,18 +141,32 @@ def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
     require(env["resolved"]["atlas-core"] == "1.0.0", "initial environment resolution failed")
+    plans_before = api.request("GET", "/api/v1/plans?environment_id=integration")["total"]
+    events_before = api.request("GET", "/api/v1/events")["latest"]
+    preview = api.request("POST", "/api/v1/plans/preview", {"environment_id": "integration", "base_revision": 1, "roots": {"render-engine": "2.0.0"}})
+    require(preview["environment_id"] == "integration" and preview["base_revision"] == 1 and preview["catalog_revision"] > 0, "preview is not bound to environment and catalog revisions")
+    require(len(preview["changes"]) == 2 and preview["resolved"]["atlas-core"] == "2.0.0", "preview diff is wrong")
+    require(api.request("GET", "/api/v1/plans?environment_id=integration")["total"] == plans_before, "preview created a plan")
+    require(api.request("GET", "/api/v1/events")["latest"] == events_before, "preview recorded events")
+    api.request("POST", "/api/v1/plans/preview", {"environment_id": "integration", "base_revision": 9, "roots": {"render-engine": "2.0.0"}}, 409)
+    api.request("POST", "/api/v1/plans/preview", {"environment_id": "missing-env", "base_revision": 1, "roots": {"render-engine": "2.0.0"}}, 404)
+    api.request("POST", "/api/v1/plans/preview", {"environment_id": "integration", "base_revision": 1, "roots": {"missing-core": "*"}}, 404)
     body = {"environment_id": "integration", "base_revision": 1, "roots": {"render-engine": "2.0.0"}, "reason": "验证新版兼容集合"}
     first = api.request("POST", "/api/v1/plans", body, 201)
     second = api.request("POST", "/api/v1/plans", body, 201)
     path = "/api/v1/plans/" + first["id"]
     ready = api.request("POST", path + "/validate", {"revision": 1})
     require(ready["state"] == "ready" and len(ready["changes"]) == 2, "plan validation did not generate expected changes")
+    require(ready["changes"] == preview["changes"] and ready["resolved"] == preview["resolved"] and ready["catalog_revision"] == preview["catalog_revision"], "preview diverged from plan validation")
     release(api, "atlas-core", "3.0.0")
+    stale = api.request("POST", "/api/v1/plans/preview", {"environment_id": "integration", "base_revision": 1, "roots": {"render-engine": "2.0.0"}})
+    require(stale["catalog_revision"] != preview["catalog_revision"], "preview did not track the catalog revision")
     api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1, "stale plan mutated environment")
     ready = api.request("POST", path + "/validate", {"revision": ready["revision"]})
     applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
     require(applied["environment"]["revision"] == 2 and applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "plan application failed")
+    api.request("POST", "/api/v1/plans/preview", {"environment_id": "integration", "base_revision": 1, "roots": {"render-engine": "2.0.0"}}, 409)
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
     other = "/api/v1/plans/" + second["id"]
     api.request("POST", other + "/validate", {"revision": 1}, 409)

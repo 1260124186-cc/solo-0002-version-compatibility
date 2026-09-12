@@ -38,6 +38,24 @@ type PlanInput struct {
 	Reason        string            `json:"reason"`
 }
 
+// PlanPreviewInput asks what a plan would change without creating one.
+type PlanPreviewInput struct {
+	EnvironmentID string            `json:"environment_id"`
+	BaseRevision  uint64            `json:"base_revision"`
+	Roots         map[string]string `json:"roots"`
+}
+
+// PlanPreview is solved against the catalog and environment revisions it
+// carries; once either revision moves, the preview is stale.
+type PlanPreview struct {
+	EnvironmentID   string            `json:"environment_id"`
+	BaseRevision    uint64            `json:"base_revision"`
+	CatalogRevision uint64            `json:"catalog_revision"`
+	Roots           map[string]string `json:"roots"`
+	Resolved        map[string]string `json:"resolved"`
+	Changes         []Change          `json:"changes"`
+}
+
 type RevisionInput struct {
 	Revision uint64 `json:"revision"`
 }
