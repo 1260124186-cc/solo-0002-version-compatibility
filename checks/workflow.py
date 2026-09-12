@@ -249,15 +249,100 @@ def drift(api):
             "drift record lost after restart")
 
 
+def drift_legacy(api, directory):
+    # Regression for upgrading a service whose state was written by the
+    # baseline build: its state.json predates drift checks and has no
+    # drift_checks collection. Seed exactly that baseline-shaped file.
+    state_dir = Path(directory) / "state"
+    state_dir.mkdir(parents=True)
+    baseline = {
+        "schema": 1,
+        "revision": 5,
+        "catalog": {
+            "revision": 4,
+            "components": {
+                "alpha-core": {"id": "alpha-core", "name": "alpha", "description": "",
+                               "created_at": "2026-09-01T00:00:00Z"},
+                "beta-tool": {"id": "beta-tool", "name": "beta", "description": "",
+                              "created_at": "2026-09-01T00:00:01Z"},
+            },
+            "releases": {
+                "alpha-core": {"1.0.0": {"component_id": "alpha-core", "version": "1.0.0",
+                                         "requires": {}, "state": "available",
+                                         "created_at": "2026-09-01T00:00:02Z"}},
+                "beta-tool": {"1.0.0": {"component_id": "beta-tool", "version": "1.0.0",
+                                        "requires": {"alpha-core": "^1.0.0"}, "state": "available",
+                                        "created_at": "2026-09-01T00:00:03Z"}},
+            },
+        },
+        "environments": {
+            "legacy-env": {"id": "legacy-env", "name": "遗留环境",
+                           "roots": {"beta-tool": "1.0.0"},
+                           "resolved": {"beta-tool": "1.0.0", "alpha-core": "1.0.0"},
+                           "revision": 1,
+                           "created_at": "2026-09-01T00:00:04Z",
+                           "updated_at": "2026-09-01T00:00:04Z"},
+        },
+        "plans": {},
+        "events": [
+            {"sequence": 1, "kind": "component", "entity_id": "alpha-core", "action": "created",
+             "at": "2026-09-01T00:00:00Z"},
+            {"sequence": 2, "kind": "component", "entity_id": "beta-tool", "action": "created",
+             "at": "2026-09-01T00:00:01Z"},
+            {"sequence": 3, "kind": "release", "entity_id": "alpha-core@1.0.0", "action": "added",
+             "at": "2026-09-01T00:00:02Z"},
+            {"sequence": 4, "kind": "release", "entity_id": "beta-tool@1.0.0", "action": "added",
+             "at": "2026-09-01T00:00:03Z"},
+            {"sequence": 5, "kind": "environment", "entity_id": "legacy-env", "action": "created",
+             "at": "2026-09-01T00:00:04Z"},
+        ],
+    }
+    (state_dir / "state.json").write_text(json.dumps(baseline, ensure_ascii=False))
+    api.start()
+    # Reaching readiness already proves the old state file loaded instead of
+    # being rejected for the missing collection.
+    env = api.request("GET", "/api/v1/environments/legacy-env")
+    require(env["revision"] == 1 and env["resolved"]["alpha-core"] == "1.0.0",
+            "legacy environment did not survive the upgrade load")
+    listing = api.request("GET", "/api/v1/drift-checks")
+    require(listing["total"] == 0, "migrated state must start with no drift records")
+    check_path = "/api/v1/environments/legacy-env/drift-checks"
+    ok = api.request("POST", check_path,
+                     {"environment_revision": 1,
+                      "installed": {"beta-tool": "1.0.0", "alpha-core": "1.0.0"}}, 201)
+    require(ok["conformant"] is True and ok["environment_revision"] == 1 and ok["catalog_revision"] == 4,
+            "drift check against upgraded baseline state has wrong basis")
+    drifted = api.request("POST", check_path,
+                          {"environment_revision": 1,
+                           "installed": {"beta-tool": "1.0.0", "alpha-core": "2.0.0"}}, 201)
+    unverifiable = {item["component_id"] for item in drifted["unverifiable"]}
+    require(drifted["conformant"] is False and "alpha-core" in unverifiable,
+            "unregistered release on upgraded state must be unverifiable")
+    require(api.request("GET", "/api/v1/environments/legacy-env")["revision"] == 1,
+            "drift check after upgrade must not modify the environment")
+    api.stop()
+    api.start()
+    records = api.request("GET", "/api/v1/drift-checks")
+    require(records["total"] == 2, "drift records created on migrated state did not persist")
+    stored = api.request("GET", "/api/v1/drift-checks/" + ok["id"])
+    require(stored["environment_revision"] == 1 and stored["catalog_revision"] == 4 and stored["conformant"] is True,
+            "persisted drift record lost its basis after restart")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "drift"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "drift", "drift-legacy"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
-            api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "drift": drift}[args.workflow](api)
+            if args.workflow == "drift-legacy":
+                # This workflow seeds a baseline-shaped state.json first and
+                # starts the service itself.
+                drift_legacy(api, directory)
+            else:
+                api.start()
+                {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "drift": drift}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

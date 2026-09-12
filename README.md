@@ -119,9 +119,10 @@ python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
 python3 checks/workflow.py drift
+python3 checks/workflow.py drift-legacy
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消；漂移检查覆盖缺失/多余/版本不一致、内部依赖违约、未登记版本无法验证、过期修订号拒绝及旧记录依据保留。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消；漂移检查覆盖缺失/多余/版本不一致、内部依赖违约、未登记版本无法验证、过期修订号拒绝及旧记录依据保留。`drift-legacy` 用缺少 `drift_checks` 字段的基线格式状态启动，验证旧数据平滑升级后漂移核对与持久化正常。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

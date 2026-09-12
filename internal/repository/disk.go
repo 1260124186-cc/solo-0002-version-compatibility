@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20
@@ -37,10 +39,21 @@ func readState(path string) (*State, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
 	}
+	migrateState(&state)
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)
 	}
 	return &state, nil
+}
+
+// migrateState upgrades schema-1 data written by older builds in place.
+// State files created before drift checks existed omit the drift_checks
+// collection; an empty collection restores the invariants validateState
+// expects without changing any revision or business data.
+func migrateState(s *State) {
+	if s.DriftChecks == nil {
+		s.DriftChecks = make(map[string]domain.DriftCheck)
+	}
 }
 
 func writeState(path string, state *State) error {

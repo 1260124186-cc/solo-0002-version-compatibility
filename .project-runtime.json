@@ -22,6 +22,10 @@
     {
       "workflow_id": "drift",
       "command": "python3 checks/workflow.py drift"
+    },
+    {
+      "workflow_id": "drift-legacy",
+      "command": "python3 checks/workflow.py drift-legacy"
     }
   ]
 }
