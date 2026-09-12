@@ -51,6 +51,8 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+方案详情与列表返回 `applicability` 字段，基于同一次读取的方案、环境与目录状态给出当前可应用性，且为只读判断，不会修改方案。`applicable` 为 false 时，`reasons` 同时列出全部阻止原因：`state_not_ready`（方案状态本身不允许应用）、`catalog_changed`（目录修订号已变化）、`environment_changed`（环境修订号已变化）。实际应用仍执行完整的并发校验，该字段仅用于提前发现过期方案。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -69,7 +71,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
 | GET /events | 按序号增量读取变更事件 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 及 `applicability`（`applicable` 或 `not_applicable`）筛选，`total` 与分页对应筛选后的结果。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
 
 ## 约束及失败行为
 

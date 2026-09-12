@@ -9,6 +9,39 @@ const (
 	Cancelled = "cancelled"
 )
 
+// Applicability reason codes reported on plan reads.
+const (
+	ReasonStateNotReady      = "state_not_ready"
+	ReasonCatalogChanged     = "catalog_changed"
+	ReasonEnvironmentChanged = "environment_changed"
+)
+
+// Applicability describes whether a plan can be applied right now, listing
+// every reason that currently blocks application.
+type Applicability struct {
+	Applicable bool     `json:"applicable"`
+	Reasons    []string `json:"reasons"`
+}
+
+// PlanApplicability evaluates a plan against the environment and catalog
+// revision read in the same snapshot. It is a pure read and never modifies
+// the plan.
+func PlanApplicability(plan Plan, env Environment, catalogRevision uint64) Applicability {
+	reasons := make([]string, 0, 3)
+	if plan.State != Ready {
+		reasons = append(reasons, ReasonStateNotReady)
+	}
+	// CatalogRevision is zero until the plan is first validated, so a draft
+	// has no catalog snapshot to compare against.
+	if plan.CatalogRevision > 0 && plan.CatalogRevision != catalogRevision {
+		reasons = append(reasons, ReasonCatalogChanged)
+	}
+	if env.Revision != plan.BaseRevision {
+		reasons = append(reasons, ReasonEnvironmentChanged)
+	}
+	return Applicability{Applicable: len(reasons) == 0, Reasons: reasons}
+}
+
 type Change struct {
 	ComponentID string `json:"component_id"`
 	From        string `json:"from,omitempty"`

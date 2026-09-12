@@ -23,7 +23,7 @@ func (a *API) createPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) plans(w http.ResponseWriter, r *http.Request) {
-	if err := queryOnly(r, "offset", "limit", "environment_id", "state"); err != nil {
+	if err := queryOnly(r, "offset", "limit", "environment_id", "state", "applicability"); err != nil {
 		fail(w, err)
 		return
 	}
@@ -32,7 +32,7 @@ func (a *API) plans(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	items, err := a.service.ListPlans(r.Context(), r.URL.Query().Get("environment_id"), r.URL.Query().Get("state"))
+	items, err := a.service.ListPlans(r.Context(), r.URL.Query().Get("environment_id"), r.URL.Query().Get("state"), r.URL.Query().Get("applicability"))
 	if err != nil {
 		fail(w, err)
 		return

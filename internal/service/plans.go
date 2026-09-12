@@ -48,21 +48,44 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 	return plan, err
 }
 
-func (s *Service) Plan(ctx context.Context, id string) (domain.Plan, error) {
+// Plan applicability filter values accepted by ListPlans.
+const (
+	FilterApplicable    = "applicable"
+	FilterNotApplicable = "not_applicable"
+)
+
+// PlanView pairs a plan with its current applicability, both derived from
+// the same state snapshot.
+type PlanView struct {
+	domain.Plan
+	Applicability domain.Applicability `json:"applicability"`
+}
+
+func viewOf(state *repository.State, plan domain.Plan) PlanView {
+	return PlanView{
+		Plan:          plan,
+		Applicability: domain.PlanApplicability(plan, state.Environments[plan.EnvironmentID], state.Catalog.Revision),
+	}
+}
+
+func (s *Service) Plan(ctx context.Context, id string) (PlanView, error) {
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
-		return domain.Plan{}, err
+		return PlanView{}, err
 	}
 	plan, exists := state.Plans[id]
 	if !exists {
-		return plan, domain.Missing("plan", id)
+		return PlanView{}, domain.Missing("plan", id)
 	}
-	return plan, nil
+	return viewOf(state, plan), nil
 }
 
-func (s *Service) ListPlans(ctx context.Context, environmentID, phase string) ([]domain.Plan, error) {
+func (s *Service) ListPlans(ctx context.Context, environmentID, phase, applicability string) ([]PlanView, error) {
 	if phase != "" && phase != domain.Draft && phase != domain.Ready && phase != domain.Applied && phase != domain.Cancelled {
 		return nil, domain.Invalid("unknown plan state")
+	}
+	if applicability != "" && applicability != FilterApplicable && applicability != FilterNotApplicable {
+		return nil, domain.Invalid("unknown applicability")
 	}
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
@@ -73,7 +96,7 @@ func (s *Service) ListPlans(ctx context.Context, environmentID, phase string) ([
 			return nil, domain.Missing("environment", environmentID)
 		}
 	}
-	items := make([]domain.Plan, 0)
+	items := make([]PlanView, 0)
 	for _, plan := range state.Plans {
 		if environmentID != "" && plan.EnvironmentID != environmentID {
 			continue
@@ -81,7 +104,14 @@ func (s *Service) ListPlans(ctx context.Context, environmentID, phase string) ([
 		if phase != "" && plan.State != phase {
 			continue
 		}
-		items = append(items, plan)
+		view := viewOf(state, plan)
+		if applicability == FilterApplicable && !view.Applicability.Applicable {
+			continue
+		}
+		if applicability == FilterNotApplicable && view.Applicability.Applicable {
+			continue
+		}
+		items = append(items, view)
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
