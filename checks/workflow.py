@@ -16,17 +16,18 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RunningService:
-    def __init__(self, directory):
+    def __init__(self, directory, max_steps="50000"):
         self.directory = Path(directory)
         self.process = None
         self.log = None
         self.base = ""
+        self.max_steps = max_steps
 
     def start(self):
         self.log = (self.directory / "server.log").open("w+")
         env = dict(os.environ, COMPAT_ADDRESS="127.0.0.1:0",
                    COMPAT_DATA_DIR=str(self.directory / "state"),
-                   COMPAT_MAX_STEPS="50000", COMPAT_REQUEST_TIMEOUT="10s")
+                   COMPAT_MAX_STEPS=self.max_steps, COMPAT_REQUEST_TIMEOUT="10s")
         self.process = subprocess.Popen([str(ROOT / "build/compat-server")],
                                         env=env, stdout=self.log, stderr=self.log)
         deadline = time.monotonic() + 10
@@ -75,6 +76,17 @@ class RunningService:
             if response.status != expected:
                 raise RuntimeError(f"{method} {path}: expected {expected}, got {response.status}: {result}")
             return result
+
+    def raw_request(self, method, path, data):
+        body = json.dumps(data).encode() if data is not None else None
+        request = urllib.request.Request(self.base + path, data=body, method=method,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            response = urllib.request.urlopen(request, timeout=12)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            return response.status, json.loads(response.read())
 
 
 def require(condition, detail):
@@ -137,6 +149,139 @@ def resolve(api):
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
 
 
+def build_chain(api, prefix, count):
+    for i in range(count):
+        component(api, prefix % i)
+    for i in range(count):
+        requires = {} if i == count - 1 else {prefix % (i + 1): "*"}
+        release(api, prefix % i, "1.0.0", requires)
+
+
+def paged_resolve(api, roots, page_budget, max_pages=1000):
+    """Drive a resolution to completion, returning (status, last_payload)."""
+    token = None
+    for _ in range(max_pages):
+        body = {"roots": roots, "step_budget": page_budget} if token is None \
+            else {"continuation_token": token, "step_budget": page_budget}
+        status, payload = api.raw_request("POST", "/api/v1/resolve", body)
+        if status != 200:
+            return status, payload
+        if payload["complete"]:
+            return status, payload
+        token = payload["continuation_token"]
+    raise RuntimeError("paged resolution did not finish")
+
+
+def resume(api):
+    # Boundary alignment. A chain of N components needs N expansion steps plus
+    # one terminal call that observes the finished solution. With
+    # COMPAT_MAX_STEPS=100, a chain of 100 must complete (reporting 101 steps)
+    # identically whether resolved once or continued across requests.
+    build_chain(api, "chain-%03d", 100)
+    roots100 = {"chain-000": "*"}
+    one_shot = api.request("POST", "/api/v1/resolve", {"roots": roots100})
+    require(one_shot["complete"] and one_shot["steps"] == 101
+            and len(one_shot["resolved"]) == 100,
+            "chain of 100 must complete in 101 steps in one shot")
+
+    # Step-budget contract. A page given budget b performs b expansions and
+    # pauses reporting b+1 steps: the next child call's entry step is already
+    # charged (precharged), but its expansion belongs to the following page.
+    # The very last observation is terminal: it is admitted even when the
+    # expansion budget is spent, so finishing across a boundary reports the
+    # same N+1 steps as a one-shot run.
+    first = api.request("POST", "/api/v1/resolve", {"roots": roots100, "step_budget": 50})
+    require((not first["complete"]) and first["status"] == "budget_exhausted"
+            and first["steps"] == 51 and len(first["provisional"]["selected"]) == 50,
+            "a 50-expansion page must pause reporting 51 steps with 50 selections")
+    require(first["resolved"] == {} and first["edges"] == [],
+            "paused response must not expose a final answer")
+
+    # The continuation has 50 expansions left; spending all 100 expansions on
+    # a chain of 100 leaves only the terminal observation, which completes.
+    boundary = api.request("POST", "/api/v1/resolve",
+                           {"continuation_token": first["continuation_token"], "step_budget": 50})
+    require(boundary["complete"] and boundary["steps"] == 101,
+            "continuation across the cap boundary must complete with the one-shot step count")
+    require(boundary["resolved"] == one_shot["resolved"]
+            and boundary["edges"] == one_shot["edges"],
+            "continued result must equal the one-shot result")
+
+    # The same holds when the final continuation still declares a budget of 1:
+    # only the terminal observation remains, which a budget never gates.
+    first = api.request("POST", "/api/v1/resolve", {"roots": roots100, "step_budget": 99})
+    require((not first["complete"]) and first["steps"] == 100,
+            "99-expansion page must pause reporting 100 steps")
+    tiny = api.request("POST", "/api/v1/resolve",
+                       {"continuation_token": first["continuation_token"], "step_budget": 1})
+    require(tiny["complete"] and tiny["steps"] == 101
+            and tiny["resolved"] == one_shot["resolved"],
+            "terminal observation must be admitted even with a one-step page")
+
+    # A page budget already covering every expansion simply completes, proving
+    # paging never changes the outcome when no boundary is crossed.
+    direct = api.request("POST", "/api/v1/resolve", {"roots": roots100, "step_budget": 100})
+    require(direct["complete"] and direct["steps"] == 101
+            and direct["resolved"] == one_shot["resolved"],
+            "an in-budget paged request must equal one-shot")
+
+    # A chain of 101 needs 101 expansions: the cap truly rejects non-terminal
+    # work at step 101, both one-shot and paged.
+    build_chain(api, "longer-%03d", 101)
+    roots101 = {"longer-000": "*"}
+    status, direct = api.raw_request("POST", "/api/v1/resolve", {"roots": roots101})
+    require(status == 422 and direct["error"]["code"] == "limit_exceeded",
+            "chain of 101 must hit the global step cap in one shot")
+    status, paged = paged_resolve(api, roots101, 100)
+    require(status == 422 and paged["error"]["code"] == "limit_exceeded",
+            "chain of 101 must hit the global step cap while paging")
+
+    # Tokens hold no process-local state: a pause near the boundary survives
+    # restart and still finishes at 101 steps.
+    paused = api.request("POST", "/api/v1/resolve", {"roots": roots100, "step_budget": 99})
+    token = paused["continuation_token"]
+    api.stop()
+    api.start()
+    continued = api.request("POST", "/api/v1/resolve",
+                            {"continuation_token": token, "step_budget": 1})
+    require(continued["complete"] and continued["steps"] == 101
+            and continued["resolved"] == one_shot["resolved"],
+            "boundary resume after restart failed")
+
+    # Any catalog change invalidates an outstanding boundary token with 409.
+    paused = api.request("POST", "/api/v1/resolve", {"roots": roots100, "step_budget": 99})
+    token = paused["continuation_token"]
+    release(api, "chain-099", "1.1.0")
+    stale = api.request("POST", "/api/v1/resolve", {"continuation_token": token}, 409)
+    require(stale["error"]["code"] == "conflict", "stale token not rejected")
+
+    # No-solution evidence is produced only at the end and is identical for a
+    # one-shot and a multi-page search.
+    build_chain(api, "dead-%02d", 40)
+    dead_roots = {"dead-00": "*", "dead-39": "^2.0.0"}
+    status, direct = api.raw_request("POST", "/api/v1/resolve", {"roots": dead_roots})
+    require(status == 422 and direct["error"]["code"] == "no_solution"
+            and direct["error"]["conflicts"], "missing no-solution evidence")
+    status, paged = paged_resolve(api, dead_roots, 10)
+    require(status == 422 and paged["error"]["code"] == "no_solution",
+            "paged search must still prove infeasibility")
+    require(paged["error"]["conflicts"] == direct["error"]["conflicts"],
+            "paged and one-shot conflict evidence must match")
+
+    # The 128-component node cap is enforced identically while paging. Run a
+    # 129-long chain under a larger step cap via a fresh data directory.
+    api.stop()
+    api.max_steps = "1000"
+    api.start()
+    build_chain(api, "wide-%03d", 129)
+    status, direct = api.raw_request("POST", "/api/v1/resolve", {"roots": {"wide-000": "*"}})
+    require(status == 422 and direct["error"]["code"] == "limit_exceeded",
+            "129-node chain must exceed the node cap in one shot")
+    status, paged = paged_resolve(api, {"wide-000": "*"}, 100)
+    require(status == 422 and paged["error"]["code"] == "limit_exceeded",
+            "129-node chain must exceed the node cap while paging")
+
+
 def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
@@ -167,13 +312,15 @@ def upgrade(api):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "resume", "upgrade"))
     args = parser.parse_args()
+    max_steps = "100" if args.workflow == "resume" else "50000"
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
-        api = RunningService(directory)
+        api = RunningService(directory, max_steps=max_steps)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "resume": resume,
+             "upgrade": upgrade}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()
