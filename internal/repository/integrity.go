@@ -8,13 +8,13 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil || s.DriftChecks == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
 		return fmt.Errorf("invalid catalog revision or component count")
 	}
-	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Events) > 10000 {
+	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.DriftChecks) > domain.MaxDriftChecks || len(s.Events) > 10000 {
 		return fmt.Errorf("persisted collection exceeds capacity")
 	}
 	for id, component := range s.Catalog.Components {
@@ -88,6 +88,24 @@ func validateState(s *State) error {
 			}
 		default:
 			return fmt.Errorf("invalid plan state")
+		}
+	}
+	for id, check := range s.DriftChecks {
+		if id != check.ID || check.EnvironmentRevision == 0 || check.CatalogRevision == 0 {
+			return fmt.Errorf("invalid drift check identity or revision")
+		}
+		env, ok := s.Environments[check.EnvironmentID]
+		if !ok || check.EnvironmentRevision > env.Revision || check.CatalogRevision > s.Catalog.Revision {
+			return fmt.Errorf("drift check references an invalid revision")
+		}
+		if check.CreatedAt.IsZero() {
+			return fmt.Errorf("drift check missing timestamp")
+		}
+		if err := validateDriftFindings(check); err != nil {
+			return err
+		}
+		if check.Conformant != !check.HasFindings() {
+			return fmt.Errorf("drift check conformant flag does not match findings")
 		}
 	}
 	var previous uint64

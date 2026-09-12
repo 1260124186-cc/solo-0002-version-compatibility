@@ -165,15 +165,99 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def drift(api):
+    populate(api)
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
+    require(env["revision"] == 1 and env["resolved"] == {"render-engine": "1.0.0", "atlas-core": "1.0.0"},
+            "initial environment resolution failed")
+    check_path = "/api/v1/environments/integration/drift-checks"
+
+    def check(installed, expected=201):
+        return api.request("POST", check_path, {"environment_revision": 1, "installed": installed}, expected)
+
+    def by_id(items):
+        return {item["component_id"]: item for item in items}
+
+    # Exact installed set matches the resolved set, including dependency edges.
+    ok = check({"render-engine": "1.0.0", "atlas-core": "1.0.0"})
+    require(ok["conformant"] is True, "identical installed set must be conformant")
+    require(ok["environment_revision"] == 1 and ok["catalog_revision"] >= 1, "basis revisions not recorded")
+
+    # Missing component, extra component, version mismatch, all in one report.
+    drifted = check({"render-engine": "2.0.0", "panel-shell": "1.0.0"})
+    require(drifted["conformant"] is False, "drifted set must not be conformant")
+    missing = by_id(drifted["missing"])
+    require("atlas-core" in missing, "missing component not detected")
+    require(by_id(drifted["extra"])["panel-shell"]["actual"] == "1.0.0", "extra component not detected")
+    mismatch = by_id(drifted["version_mismatches"])["render-engine"]
+    require(mismatch["expected"] == "1.0.0" and mismatch["actual"] == "2.0.0", "version mismatch not detected")
+    # render-engine 2.0.0 requires atlas-core ^2.0.0, but atlas-core is absent:
+    # that is an internal dependency violation reported separately from drift.
+    require(any(v["requires"] == "atlas-core" for v in drifted["violations"]),
+            "internal dependency violation on missing dependency not detected")
+
+    # Installed dependency violates a registered constraint.
+    violated = check({"render-engine": "1.0.0", "atlas-core": "2.0.0"})
+    edge_violations = [v for v in violated["violations"] if v["requires"] == "atlas-core" and v["actual"] == "2.0.0"]
+    require(edge_violations and edge_violations[0]["constraint"] == "^1.0.0", "constraint violation not detected")
+    require(by_id(violated["version_mismatches"])["atlas-core"]["status"] == "version_mismatch",
+            "the same component is also a version mismatch")
+
+    # An unregistered actual version is unverifiable, never silently compatible.
+    unknown = check({"render-engine": "1.0.0", "atlas-core": "9.9.9"})
+    unverifiable = {item["component_id"]: item for item in unknown["unverifiable"]}
+    require("atlas-core" in unverifiable and unverifiable["atlas-core"]["version"] == "9.9.9",
+            "unregistered release must be reported as unverifiable")
+    require(unknown["conformant"] is False, "unverifiable release must block conformant result")
+    require(not any(v["requires"] == "atlas-core" for v in unknown["violations"]),
+            "an edge to an unregistered release cannot be proven violated")
+
+    # Unregistered version of a component that a registered release depends on:
+    # the edge is recorded as unverifiable rather than assumed satisfied.
+    panel = api.request("POST", "/api/v1/environments",
+                        {"id": "panel-lab", "name": "面板实验", "roots": {"panel-shell": "*"}}, 201)
+    panel_drift = api.request("POST", "/api/v1/environments/panel-lab/drift-checks",
+                              {"environment_revision": panel["revision"],
+                               "installed": {"panel-shell": "1.0.0", "render-engine": "7.7.7",
+                                             "atlas-core": "2.0.0"}}, 201)
+    edges = [item for item in panel_drift["unverifiable"] if item.get("edge")]
+    require(any(item["edge"]["from"] == "panel-shell" and item["edge"]["to"] == "render-engine" for item in edges),
+            "dependency edge on unregistered release must be unverifiable")
+
+    # Stale environment revision is rejected without creating a record.
+    api.request("POST", check_path,
+                {"environment_revision": 2, "installed": {"render-engine": "1.0.0", "atlas-core": "1.0.0"}}, 409)
+
+    # Old records keep their original basis after the environment changes.
+    old_id = ok["id"]
+    body = {"environment_id": "integration", "base_revision": 1,
+            "roots": {"render-engine": "2.0.0"}, "reason": "升级以验证漂移依据保留"}
+    plan = api.request("POST", "/api/v1/plans", body, 201)
+    ready = api.request("POST", f"/api/v1/plans/{plan['id']}/validate", {"revision": 1})
+    applied = api.request("POST", f"/api/v1/plans/{plan['id']}/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 2, "environment did not advance")
+    stored = api.request("GET", "/api/v1/drift-checks/" + old_id)
+    require(stored["environment_revision"] == 1 and stored["conformant"] is True,
+            "old drift record lost its original basis")
+    listing = api.request("GET", "/api/v1/drift-checks?environment_id=integration")
+    require(listing["total"] >= 4 and all(item["environment_id"] == "integration" for item in listing["items"]),
+            "drift check listing or filter is wrong")
+    api.stop()
+    api.start()
+    require(api.request("GET", "/api/v1/drift-checks/" + old_id)["conformant"] is True,
+            "drift record lost after restart")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "drift"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "drift": drift}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

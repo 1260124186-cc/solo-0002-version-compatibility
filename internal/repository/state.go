@@ -21,6 +21,7 @@ type State struct {
 	Catalog      domain.Catalog                `json:"catalog"`
 	Environments map[string]domain.Environment `json:"environments"`
 	Plans        map[string]domain.Plan        `json:"plans"`
+	DriftChecks  map[string]domain.DriftCheck  `json:"drift_checks"`
 	Events       []Event                       `json:"events"`
 }
 
@@ -33,6 +34,7 @@ func NewState() *State {
 		},
 		Environments: make(map[string]domain.Environment),
 		Plans:        make(map[string]domain.Plan),
+		DriftChecks:  make(map[string]domain.DriftCheck),
 		Events:       make([]Event, 0),
 	}
 }

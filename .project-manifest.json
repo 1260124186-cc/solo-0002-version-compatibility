@@ -105,6 +105,26 @@
         "resolution",
         "repository"
       ]
+    },
+    {
+      "id": "drift",
+      "name": "环境漂移核对",
+      "entry": "POST /api/v1/environments/{id}/drift-checks",
+      "steps": [
+        "校验环境修订号并取环境解析集合与目录修订",
+        "分类缺失、多余、版本不一致与内部依赖违约",
+        "登记无法验证的实际版本并保存独立只读记录"
+      ],
+      "success": "返回并保存标明环境与目录修订依据的核对记录",
+      "failure": "过期修订号返回 409，未登记版本明确标记为无法验证",
+      "verification": "真实 HTTP 核对漂移集合、无法验证版本及旧记录依据保留",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "resolution",
+        "domain",
+        "repository"
+      ]
     }
   ]
 }

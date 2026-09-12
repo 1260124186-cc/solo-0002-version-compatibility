@@ -51,6 +51,27 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 环境漂移核对
+
+环境记录描述期望集合，实际集成系统可能已经偏离。调用方提交实际安装的组件版本，服务对照**指定的环境修订号**核对一次，不修改环境，也不会创建或应用任何方案：
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/environments/integration/drift-checks \
+  -H 'Content-Type: application/json' \
+  -d '{"environment_revision":2,"installed":{"render-engine":"2.0.0","atlas-core":"2.0.0"}}'
+```
+
+请求要求：`environment_revision` 为当前环境修订号（不一致返回 409，且不产生记录），`installed` 为 1–128 个 `组件标识: 稳定版本`。结果保存为独立的不可变记录，包含：
+
+- `missing`：环境解析集合中存在、实际未安装的组件。
+- `extra`：实际安装、但不属于该环境修订解析集合的组件。
+- `version_mismatches`：同一组件实际版本与期望版本不同。
+- `violations`：实际集合内部不满足已登记版本依赖约束的边（含实际缺失的被依赖组件）。
+- `unverifiable`：实际版本未登记在组件目录中，或依赖边指向这种版本——服务明确说明无法验证，绝不把它当作兼容。
+- `conformant`：以上列表全部为空时才为 `true`。
+
+记录标明 `environment_revision` 与 `catalog_revision` 两个依据。环境或目录之后变化不会改变旧记录，也不会让旧结果失效；需要依据当前状态核对就再提交一次。撤回版本仍属已登记版本，其约束照常参与核对。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,6 +83,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| POST /environments/{id}/drift-checks | 提交实际安装版本并生成漂移核对记录 |
+| GET /drift-checks | 分页查询漂移核对记录，可按 environment_id 筛选 |
+| GET /drift-checks/{id} | 查看一次漂移核对及其环境、目录修订依据 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -76,7 +100,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - 仅支持稳定 `major.minor.patch`，每段最大 4294967295，无前导零。支持 `*`、精确版本、`>=`、`<=`、`>`、`<`、`^`、`~` 及空格分隔的交集。
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
-- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境、5000 个方案和 2000 条漂移核对记录，单次核对最多提交 128 个实际组件。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
@@ -94,9 +118,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py drift
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消；漂移检查覆盖缺失/多余/版本不一致、内部依赖违约、未登记版本无法验证、过期修订号拒绝及旧记录依据保留。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

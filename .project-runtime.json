@@ -18,6 +18,10 @@
     {
       "workflow_id": "upgrade",
       "command": "python3 checks/workflow.py upgrade"
+    },
+    {
+      "workflow_id": "drift",
+      "command": "python3 checks/workflow.py drift"
     }
   ]
 }
