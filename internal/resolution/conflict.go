@@ -119,7 +119,7 @@ func unsatisfiable(causes []requirement, catalog map[string][]candidate) bool {
 }
 
 func exact(version semver.Version) semver.Constraint {
-	return semver.Constraint{Predicates: []semver.Predicate{{Operator: "=", Version: version}}}
+	return semver.Constraint{Alternatives: [][]semver.Predicate{{{Operator: "=", Version: version}}}}
 }
 
 func anyMatches(candidates []candidate, constraints []semver.Constraint) bool {

@@ -161,6 +161,33 @@ def resolve(api):
     require(conflict and conflict["causes"], "dependency cycle conflict evidence missing")
     require(set(conflict["components"]) == {"loop-one", "loop-two"}, "dependency cycle conflict components wrong")
     require(len(conflict["causes"]) <= 8, "dependency cycle conflict evidence not bounded")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"atlas-core": "^1.0.0 || ^2.0.0"}})
+    require(result["resolved"] == {"atlas-core": "2.0.0"}, "union root did not select the highest match")
+    component(api, "flex-app")
+    release(api, "flex-app", "1.0.0", {"atlas-core": "1.0.0 || 2.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"flex-app": "*"}})
+    require(result["resolved"] == {"atlas-core": "2.0.0", "flex-app": "1.0.0"}, "union dependency not resolved")
+    release(api, "flex-app", "1.1.0", {"atlas-core": ">=3.0.0 || <1.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"flex-app": "1.1.0"}}, 422)
+    conflict = result["error"].get("conflict")
+    require(conflict and result["error"]["conflicts"], "union conflict evidence missing")
+    require(conflict["components"] == ["atlas-core", "flex-app"], "union conflict components wrong")
+    require(conflict["causes"] == [{"component": "atlas-core", "constraint": ">=3.0.0 || <1.0.0",
+                                    "source": "parent", "source_component": "flex-app", "source_version": "1.1.0"}],
+            "union conflict did not converge to the contradictory condition")
+    for name in ("gate-core", "gate-app"):
+        component(api, name)
+    release(api, "gate-core", "1.0.0")
+    release(api, "gate-core", "2.0.0")
+    release(api, "gate-app", "1.0.0", {"gate-core": "^2.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"gate-app": "*", "gate-core": "1.0.0 || >=3.0.0"}}, 422)
+    conflict = result["error"].get("conflict")
+    require(conflict and conflict["components"] == ["gate-app", "gate-core"], "union-versus-parent conflict components wrong")
+    sources = sorted((cause["source"], cause.get("source_component", ""), cause["constraint"]) for cause in conflict["causes"])
+    require(sources == [("parent", "gate-app", "^2.0.0"), ("root", "", "1.0.0 || >=3.0.0")],
+            "union-versus-parent conflict causes wrong")
+    api.request("POST", "/api/v1/resolve", {"roots": {"atlas-core": "^1.0.0 ||"}}, 400)
+    release(api, "flex-app", "9.9.9", {"atlas-core": "|| ^1.0.0"}, expected=400)
 
 
 def upgrade(api):
