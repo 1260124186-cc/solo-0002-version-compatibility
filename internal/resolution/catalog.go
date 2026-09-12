@@ -60,3 +60,24 @@ func matchesAll(version semver.Version, needs []requirement) bool {
 	}
 	return true
 }
+
+// preferInstalled moves each installed version to the front of its
+// component's candidate list so the search tries keeping it first. Unknown
+// or withdrawn versions are absent from the candidates and ignored; the
+// remaining candidates keep their newest-first order, so the overall
+// selection order stays deterministic.
+func preferInstalled(catalog map[string][]candidate, installed map[string]string) {
+	for id, version := range installed {
+		candidates := catalog[id]
+		for i, choice := range candidates {
+			if choice.release.Version != version {
+				continue
+			}
+			if i > 0 {
+				copy(candidates[1:i+1], candidates[:i])
+				candidates[0] = choice
+			}
+			break
+		}
+	}
+}

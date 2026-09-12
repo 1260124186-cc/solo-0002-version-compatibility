@@ -137,6 +137,44 @@ def resolve(api):
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
 
 
+def resolve_baseline(api):
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "baseline-env", "name": "基线环境", "roots": {"render-engine": "1.0.0"}}, 201)
+    require(env["resolved"] == {"render-engine": "1.0.0", "atlas-core": "1.0.0"}, "baseline environment resolution failed")
+    body = {"roots": {"render-engine": "*"}, "environment_id": "baseline-env", "environment_revision": 1}
+    kept = api.request("POST", "/api/v1/resolve", body)
+    require(kept["resolved"] == {"render-engine": "1.0.0", "atlas-core": "1.0.0"}, "installed versions were not preferred")
+    require(kept["environment_revision"] == 1, "base environment revision was not reported")
+    require(kept["changes"] == [], "unchanged resolution reported changes")
+    require(api.request("POST", "/api/v1/resolve", body) == kept, "prefer-installed resolution is not deterministic")
+    shifted = api.request("POST", "/api/v1/resolve",
+                          {"roots": {"render-engine": "*", "atlas-core": "^2.0.0"},
+                           "environment_id": "baseline-env", "environment_revision": 1})
+    require(shifted["resolved"] == {"render-engine": "2.0.0", "atlas-core": "2.0.0"},
+            "solver did not fall back when keeping installed versions caused a conflict")
+    changes = {change["component_id"]: change for change in shifted["changes"]}
+    require(changes.get("render-engine", {}).get("kind") == "upgrade"
+            and changes["render-engine"]["from"] == "1.0.0" and changes["render-engine"]["to"] == "2.0.0"
+            and changes.get("atlas-core", {}).get("kind") == "upgrade", "change list relative to environment is wrong")
+    bumped = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"render-engine": ">=2.0.0"}, "environment_id": "baseline-env", "environment_revision": 1})
+    require(bumped["resolved"]["render-engine"] == "2.0.0", "installed version blocked a required upgrade")
+    shrunk = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"atlas-core": "1.0.0"}, "environment_id": "baseline-env", "environment_revision": 1})
+    require(shrunk["resolved"] == {"atlas-core": "1.0.0"}, "reduced resolution picked unreachable components")
+    require({c["component_id"]: c["kind"] for c in shrunk["changes"]} == {"render-engine": "remove"},
+            "removal relative to environment was not reported")
+    api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "*"}, "environment_id": "baseline-env"}, 400)
+    api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "*"}, "environment_revision": 1}, 400)
+    api.request("POST", "/api/v1/resolve",
+                {"roots": {"render-engine": "*"}, "environment_id": "missing-env", "environment_revision": 1}, 404)
+    api.request("POST", "/api/v1/resolve",
+                {"roots": {"render-engine": "*"}, "environment_id": "baseline-env", "environment_revision": 7}, 409)
+    unchanged = api.request("GET", "/api/v1/environments/baseline-env")
+    require(unchanged["revision"] == 1 and unchanged["resolved"]["render-engine"] == "1.0.0",
+            "resolving mutated the environment")
+
+
 def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
@@ -173,7 +211,7 @@ def main():
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": lambda a: (resolve(a), resolve_baseline(a)), "upgrade": upgrade}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

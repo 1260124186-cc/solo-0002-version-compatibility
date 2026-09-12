@@ -37,6 +37,8 @@ curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json'
 
 求解响应的 `resolved` 包含 `render-unit=1.0.0` 和 `compute-core=1.0.0`，`edges` 给出传递依赖边，`steps` 给出搜索步骤，`catalog_revision` 标记所用目录版本。求解只计算结果，不改变任何环境。
 
+`POST /api/v1/resolve` 还可选地接受 `environment_id` 与 `environment_revision`（两者必须同时提供或同时省略）。提供后，求解优先保留该环境中仍满足全部约束的已安装版本；保留某个版本导致依赖冲突时仍允许改选其他版本。选择顺序保持确定，但这只是偏好而非变更数全局最少的求解。响应额外携带 `environment_revision`（本次依据的环境修订）和 `changes`（相对该环境的新增、移除、升级或降级列表，无变化时为空列表）。环境不存在返回 404，期望修订号与当前环境修订不一致返回 409；求解只读取环境，不会更新它。未提供这两个字段时保持高版本优先的原有行为。
+
 创建环境：
 
 ```sh
@@ -59,7 +61,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET /components/{id} | 获取组件详情 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
-| POST /resolve | 求解根依赖和传递依赖 |
+| POST /resolve | 求解根依赖和传递依赖，可选按环境基线优先保留已安装版本 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
 | GET、POST /plans | 分页筛选、创建方案 |

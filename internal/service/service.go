@@ -31,11 +31,35 @@ func freshID() (string, error) {
 func now() time.Time { return time.Now().UTC() }
 
 func (s *Service) Resolve(ctx context.Context, input domain.ResolutionInput) (domain.Resolution, error) {
+	if (input.EnvironmentID == "") != (input.EnvironmentRevision == 0) {
+		return domain.Resolution{}, domain.Invalid("environment_id and environment_revision must be provided together")
+	}
 	snapshot, err := s.repo.Snapshot(ctx)
 	if err != nil {
 		return domain.Resolution{}, err
 	}
-	return s.solver.Resolve(ctx, snapshot.Catalog, input.Roots)
+	if input.EnvironmentID == "" {
+		return s.solver.Resolve(ctx, snapshot.Catalog, input.Roots)
+	}
+	if err := domain.ValidateID(input.EnvironmentID); err != nil {
+		return domain.Resolution{}, err
+	}
+	env, exists := snapshot.Environments[input.EnvironmentID]
+	if !exists {
+		return domain.Resolution{}, domain.Missing("environment", input.EnvironmentID)
+	}
+	if env.Revision != input.EnvironmentRevision {
+		return domain.Resolution{}, domain.Conflict("environment revision is %d, expected %d", env.Revision, input.EnvironmentRevision)
+	}
+	result, err := s.solver.ResolvePreferring(ctx, snapshot.Catalog, input.Roots, env.Resolved)
+	if err != nil {
+		return domain.Resolution{}, err
+	}
+	// Resolving only reads the environment; the diff is reported, never applied.
+	result.EnvironmentRevision = env.Revision
+	changes := resolution.Diff(env.Resolved, result.Resolved)
+	result.Changes = &changes
+	return result, nil
 }
 
 func checkCatalog(revision uint64, state *repository.State) error {

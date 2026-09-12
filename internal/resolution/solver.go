@@ -24,6 +24,19 @@ type search struct {
 }
 
 func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
+	return s.resolve(ctx, catalog, roots, nil)
+}
+
+// ResolvePreferring tries the installed version of each component first
+// whenever it still satisfies every constraint, and falls back to other
+// versions when keeping it leads to a dependency conflict. The selection
+// order stays deterministic; it is a preference, not a search for the
+// globally smallest set of changes.
+func (s Solver) ResolvePreferring(ctx context.Context, catalog domain.Catalog, roots, installed map[string]string) (domain.Resolution, error) {
+	return s.resolve(ctx, catalog, roots, installed)
+}
+
+func (s Solver) resolve(ctx context.Context, catalog domain.Catalog, roots, installed map[string]string) (domain.Resolution, error) {
 	if err := domain.ValidateRequirements(roots, false); err != nil {
 		return domain.Resolution{}, err
 	}
@@ -34,6 +47,7 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 	if err != nil {
 		return domain.Resolution{}, err
 	}
+	preferInstalled(compiled, installed)
 	if s.MaxSteps <= 0 {
 		s.MaxSteps = 50000
 	}
