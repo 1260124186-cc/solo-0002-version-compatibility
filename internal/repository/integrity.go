@@ -56,7 +56,7 @@ func validateState(s *State) error {
 		}
 	}
 	for id, env := range s.Environments {
-		if id != env.ID || env.Revision == 0 {
+		if id != env.ID || env.Revision == 0 || env.NameRevision == 0 {
 			return fmt.Errorf("invalid environment identity or revision")
 		}
 		if err := domain.ValidateID(id); err != nil {

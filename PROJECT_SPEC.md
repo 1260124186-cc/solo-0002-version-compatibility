@@ -6,7 +6,7 @@
 ## 核心实体
 - Component：组件标识、名称、说明、创建时间。
 - Release：不可变的语义版本、依赖约束、可用或撤回状态。
-- Environment：环境标识、根依赖、已解析版本集合、修订号。
+- Environment：环境标识、名称、根依赖、已解析版本集合、修订号与名称修订号。
 - Plan：环境原修订号、期望根依赖、求解结果、目录修订号、状态、差异与原因。
 - Event：递增序号、变更对象、动作、时间；与业务状态一同持久化。
 
@@ -20,6 +20,8 @@
 
 方案状态为 draft、ready、applied、cancelled。验证失败保持原状态，验证成功变为 ready。应用要求目录修订号和环境修订号同时未变化，且只能应用一次。目录修改使旧的 ready 方案失效，重新验证后才能应用。已被环境使用的版本不能撤回。
 
+环境标识创建后不可变，名称可携带当前名称修订号修改；名称修订号仅随改名递增，并发改名先提交者成功、后提交者返回 409。改名不推进环境修订号，不影响根依赖、解析集合与既有方案，并记录 renamed 事件随状态持久化。
+
 ## 模块
 - internal/semver：稳定语义版本解析、比较和区间规则。
 - internal/domain：实体、输入与状态约束。
@@ -31,7 +33,7 @@
 - cmd/server：服务启动与平滑退出。
 
 ## 接口
-所有业务接口以 /api/v1 开头。components 及其 releases 维护组件；resolve 计算版本集合；environments 管理目标环境；plans 及 validate、apply、cancel 动作控制升级；events 查看变更轨迹。/healthz 返回可用状态。响应均为 JSON；错误含 code、detail 及可选 conflicts。
+所有业务接口以 /api/v1 开头。components 及其 releases 维护组件；resolve 计算版本集合；environments 及其 rename 动作管理目标环境；plans 及 validate、apply、cancel 动作控制升级；events 查看变更轨迹。/healthz 返回可用状态。响应均为 JSON；错误含 code、detail 及可选 conflicts。
 
 ## 持久化与并发
 数据写入独立运行目录的 state.json，在同目录临时文件完成写入并执行 fsync 后原子替换；只有持久化成功才替换内存状态。进程使用系统文件锁阻止共享数据目录并发启动。进程内修改串行化，解析使用状态副本；提交时重新检查修订号。服务面向受信任网络，默认监听回环地址。

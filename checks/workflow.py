@@ -159,10 +159,26 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    third = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 2,
+                                                  "roots": {"render-engine": "1.0.0"}, "reason": "回退到旧版兼容集合"}, 201)
+    renamed = api.request("POST", "/api/v1/environments/integration/rename", {"name": "集成环境-北", "revision": 1})
+    require(renamed["name"] == "集成环境-北" and renamed["revision"] == 2 and renamed["name_revision"] == 2,
+            "rename altered environment content state")
+    require(renamed["roots"] == {"render-engine": "2.0.0"} and renamed["resolved"]["atlas-core"] == "2.0.0",
+            "rename altered roots or resolved set")
+    api.request("POST", "/api/v1/environments/integration/rename", {"name": "并发名称", "revision": 1}, 409)
+    renamed = api.request("POST", "/api/v1/environments/integration/rename", {"name": "集成环境-南", "revision": 2})
+    require(renamed["name_revision"] == 3, "rename did not advance the name revision")
+    ready_third = api.request("POST", "/api/v1/plans/" + third["id"] + "/validate", {"revision": 1})
+    require(ready_third["state"] == "ready", "rename invalidated a plan based on the environment revision")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    env = api.request("GET", "/api/v1/environments/integration")
+    require(env["revision"] == 2, "environment revision lost after restart")
+    require(env["name"] == "集成环境-南" and env["name_revision"] == 3, "renamed state lost after restart")
+    actions = [event["action"] for event in api.request("GET", "/api/v1/events?entity_id=integration")["items"]]
+    require(actions == ["created", "renamed", "renamed"], "rename events missing or out of order")
 
 
 def main():

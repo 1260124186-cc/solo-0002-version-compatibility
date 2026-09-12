@@ -51,6 +51,17 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 环境名称修改
+
+环境标识创建后不可变，名称可通过 `POST /api/v1/environments/{id}/rename` 修改，请求体为 `{"name":"新名称","revision":N}`，其中 `revision` 携带环境当前的名称修订号。
+
+环境携带两个相互独立的修订号：
+
+- `revision`（环境修订号）：仅随方案应用递增，方案的 `base_revision` 引用它。名称修改不会推进它，因此基于旧环境修订号创建、尚未应用的方案在改名后仍可验证和应用。
+- `name_revision`（名称修订号）：初始为 1，仅随名称修改递增。改名请求必须携带当前名称修订号作为乐观锁：并发改名时先提交的一方成功并推进名称修订号，后提交的一方因修订号过期返回 409，需重新读取环境后再试。
+
+名称修改不改变环境的标识、根依赖、已解析集合与环境修订号。每次修改记录一条 `renamed` 事件并随状态持久化，重启后保留，可通过 `GET /api/v1/events?entity_id={id}` 查询。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,6 +73,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| POST /environments/{id}/rename | 携带名称修订号修改环境名称 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
