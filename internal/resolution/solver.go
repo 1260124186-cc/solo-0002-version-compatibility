@@ -189,15 +189,20 @@ func (s *search) explain(id string, needs []requirement) {
 	}
 	override := findOverride(needs)
 	if override != nil {
+		overrideVersion := override.constraint.Predicates[0].Version
+		reported := false
 		for _, need := range needs {
-			if need.override {
+			if need.override || need.constraint.Matches(overrideVersion) {
 				continue
 			}
-			item := fmt.Sprintf("%s requires %s %s, but environment override requires %s %s", need.from, id, need.constraint.Raw, id, override.constraint.Raw)
-			s.addConflict(item)
+			s.addConflict(fmt.Sprintf("%s requires %s %s, but environment override requires %s %s", need.from, id, need.constraint.Raw, id, override.constraint.Raw))
+			reported = true
 			if len(s.conflicts) >= 8 {
 				return
 			}
+		}
+		if !reported {
+			s.addConflict(fmt.Sprintf("environment override requires %s %s, but that release is not available", id, override.constraint.Raw))
 		}
 		return
 	}

@@ -137,6 +137,23 @@ def resolve(api):
     require(any("render-engine@2.0.0 requires atlas-core ^2.0.0" in item
                 and "environment override requires atlas-core 1.0.0" in item
                 for item in result["error"]["conflicts"]), "override conflict evidence is not explicit")
+    for name in ("shared-lib", "compatible-parent", "conflicting-parent"):
+        component(api, name)
+    release(api, "shared-lib", "1.0.0")
+    release(api, "shared-lib", "2.0.0")
+    release(api, "compatible-parent", "1.0.0", {"shared-lib": ">=1.0.0"})
+    release(api, "conflicting-parent", "1.0.0", {"shared-lib": "^2.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {
+        "roots": {"compatible-parent": "*", "conflicting-parent": "*"},
+        "overrides": {"shared-lib": "1.0.0"},
+    }, 422)
+    conflicts = result["error"]["conflicts"]
+    require(any("conflicting-parent@1.0.0 requires shared-lib ^2.0.0" in item
+                and "environment override requires shared-lib 1.0.0" in item
+                for item in conflicts), "missing the parent constraint that conflicts with the override")
+    require(not any("compatible-parent@1.0.0 requires shared-lib" in item
+                    and "environment override requires shared-lib" in item
+                    for item in conflicts), "compatible parent constraint was incorrectly reported as a conflict")
     api.request("POST", "/api/v1/resolve",
                 {"roots": {"atlas-core": "*"}, "overrides": {"atlas-core": "1.0.0"}}, 400)
     for name in ("cycle-alpha", "cycle-beta"):
