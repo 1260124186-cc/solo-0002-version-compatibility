@@ -7,15 +7,17 @@ type Environment struct {
 	Name      string            `json:"name"`
 	Roots     map[string]string `json:"roots"`
 	Resolved  map[string]string `json:"resolved"`
+	PolicyID  string            `json:"policy_id,omitempty"`
 	Revision  uint64            `json:"revision"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
 type EnvironmentInput struct {
-	ID    string            `json:"id"`
-	Name  string            `json:"name"`
-	Roots map[string]string `json:"roots"`
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	Roots    map[string]string `json:"roots"`
+	PolicyID string            `json:"policy_id"`
 }
 
 type ResolutionInput struct {

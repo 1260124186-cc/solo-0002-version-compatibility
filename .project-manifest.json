@@ -24,6 +24,11 @@
       "responsibility": "依赖求解"
     },
     {
+      "id": "policy",
+      "path": "internal/policy",
+      "responsibility": "升级策略规则求值"
+    },
+    {
       "id": "service",
       "path": "internal/service",
       "responsibility": "工作流编排"
@@ -103,6 +108,26 @@
         "httpapi",
         "service",
         "resolution",
+        "repository"
+      ]
+    },
+    {
+      "id": "policy",
+      "name": "升级策略治理",
+      "entry": "POST /api/v1/environments/{id}/policy",
+      "steps": [
+        "维护策略集并绑定到环境",
+        "验证方案时逐条评估规则",
+        "策略修订后应用要求重新验证"
+      ],
+      "success": "合规方案进入 ready 并可应用，判断记录随方案持久化",
+      "failure": "违反规则的方案保持 draft，策略变化后应用返回 409",
+      "verification": "真实 HTTP 验证策略维护、绑定、逐条判断与修订失效",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "policy",
+        "domain",
         "repository"
       ]
     }

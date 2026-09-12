@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"solo-0002-version-compatibility/internal/domain"
+	"solo-0002-version-compatibility/internal/policy"
 	"solo-0002-version-compatibility/internal/repository"
 	"solo-0002-version-compatibility/internal/resolution"
 )
@@ -116,6 +117,15 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		return plan, err
 	}
 	changes := resolution.Diff(env.Resolved, result.Resolved)
+	findings, policyID, policyRevision, err := evaluatePolicy(state, env, changes)
+	if err != nil {
+		return plan, err
+	}
+	// A plan that violates any bound rule must not become applicable.
+	next := domain.Ready
+	if !policy.Passed(findings) {
+		next = domain.Draft
+	}
 	var updated domain.Plan
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		latest := current.Plans[id]
@@ -131,10 +141,16 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		if err := checkEnvironment(current.Environments[plan.EnvironmentID], plan.BaseRevision); err != nil {
 			return err
 		}
-		latest.State = domain.Ready
+		if err := checkPolicyBinding(current, current.Environments[plan.EnvironmentID], policyID, policyRevision); err != nil {
+			return err
+		}
+		latest.State = next
 		latest.Resolved = result.Resolved
 		latest.Changes = changes
 		latest.CatalogRevision = result.CatalogRevision
+		latest.PolicyID = policyID
+		latest.PolicyRevision = policyRevision
+		latest.PolicyFindings = findings
 		latest.Revision++
 		latest.UpdatedAt = now()
 		current.Plans[id] = latest

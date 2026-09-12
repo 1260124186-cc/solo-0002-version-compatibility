@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20
@@ -36,6 +38,10 @@ func readState(path string) (*State, error) {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
+	}
+	// States written before policies existed lack the collection.
+	if state.Policies == nil {
+		state.Policies = make(map[string]domain.PolicySet)
 	}
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)

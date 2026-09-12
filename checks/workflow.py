@@ -165,15 +165,87 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def policy(api):
+    populate(api)
+    release(api, "render-engine", "2.1.0", {"atlas-core": "^2.0.0"})
+    rules = [
+        {"kind": "no_downgrade"},
+        {"kind": "major_change", "max_major_delta": 0},
+        {"kind": "protect_components", "components": ["render-engine"]},
+    ]
+    created = api.request("POST", "/api/v1/policies", {"id": "strict-upgrade", "name": "严格升级策略", "rules": rules}, 201)
+    require(created["revision"] == 1 and len(created["rules"]) == 3, "policy creation failed")
+    api.request("POST", "/api/v1/policies", {"id": "strict-upgrade", "name": "x", "rules": rules}, 409)
+    api.request("POST", "/api/v1/policies", {"id": "bad-kind", "name": "x", "rules": [{"kind": "no_removal"}]}, 400)
+    api.request("POST", "/api/v1/policies", {"id": "bad-dup", "name": "x", "rules": [{"kind": "no_downgrade"}, {"kind": "no_downgrade"}]}, 400)
+    api.request("POST", "/api/v1/policies", {"id": "bad-delta", "name": "x", "rules": [{"kind": "major_change"}]}, 400)
+
+    plain = api.request("POST", "/api/v1/environments", {"id": "open-env", "name": "无策略环境", "roots": {"render-engine": "1.0.0"}}, 201)
+    require("policy_id" not in plain, "unbound environment exposes a policy")
+    draft = api.request("POST", "/api/v1/plans", {"environment_id": "open-env", "base_revision": 1, "roots": {"render-engine": "1.0.0"}, "reason": "无策略验证"}, 201)
+    checked = api.request("POST", "/api/v1/plans/" + draft["id"] + "/validate", {"revision": 1})
+    require(checked["state"] == "ready" and "policy_findings" not in checked, "unbound validation changed behavior")
+
+    api.request("POST", "/api/v1/environments", {"id": "guarded", "name": "受控环境", "roots": {"render-engine": "2.0.0"}}, 201)
+    api.request("POST", "/api/v1/environments/guarded/policy", {"policy_id": "missing-policy"}, 404)
+    bound = api.request("POST", "/api/v1/environments/guarded/policy", {"policy_id": "strict-upgrade"})
+    require(bound["policy_id"] == "strict-upgrade" and bound["revision"] == 1, "policy binding failed")
+
+    blocked = api.request("POST", "/api/v1/plans", {"environment_id": "guarded", "base_revision": 1, "roots": {"render-engine": "1.0.0"}, "reason": "回退到旧版本"}, 201)
+    outcome = api.request("POST", "/api/v1/plans/" + blocked["id"] + "/validate", {"revision": 1})
+    require(outcome["state"] == "draft", "violating plan became ready")
+    findings = {item["rule"]["kind"]: item for item in outcome["policy_findings"]}
+    require(len(findings) == 3, "validation did not report per-rule findings")
+    require(not findings["no_downgrade"]["passed"] and not findings["major_change"]["passed"], "downgrade findings are wrong")
+    require(findings["protect_components"]["passed"], "protection finding is wrong")
+    require(outcome["policy_id"] == "strict-upgrade" and outcome["policy_revision"] == 1, "policy snapshot not recorded")
+    api.request("POST", "/api/v1/plans/" + blocked["id"] + "/apply", {"revision": outcome["revision"]}, 409)
+
+    removal = api.request("POST", "/api/v1/plans", {"environment_id": "guarded", "base_revision": 1, "roots": {"atlas-core": "2.0.0"}, "reason": "移除渲染引擎"}, 201)
+    outcome = api.request("POST", "/api/v1/plans/" + removal["id"] + "/validate", {"revision": 1})
+    findings = {item["rule"]["kind"]: item for item in outcome["policy_findings"]}
+    require(outcome["state"] == "draft" and not findings["protect_components"]["passed"], "protected removal was not blocked")
+
+    upgrade = api.request("POST", "/api/v1/plans", {"environment_id": "guarded", "base_revision": 1, "roots": {"render-engine": "2.1.0"}, "reason": "小版本升级"}, 201)
+    ready = api.request("POST", "/api/v1/plans/" + upgrade["id"] + "/validate", {"revision": 1})
+    require(ready["state"] == "ready" and all(item["passed"] for item in ready["policy_findings"]), "compliant plan was blocked")
+    updated = api.request("PUT", "/api/v1/policies/strict-upgrade", {"revision": 1, "name": "严格升级策略", "rules": rules})
+    require(updated["revision"] == 2, "policy update did not bump its revision")
+    api.request("PUT", "/api/v1/policies/strict-upgrade", {"revision": 1, "name": "x", "rules": rules}, 409)
+    api.request("POST", "/api/v1/plans/" + upgrade["id"] + "/apply", {"revision": ready["revision"]}, 409)
+    ready = api.request("POST", "/api/v1/plans/" + upgrade["id"] + "/validate", {"revision": ready["revision"]})
+    require(ready["policy_revision"] == 2, "revalidation did not record the new policy revision")
+    applied = api.request("POST", "/api/v1/plans/" + upgrade["id"] + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["resolved"]["render-engine"] == "2.1.0", "guarded upgrade did not apply")
+
+    api.stop()
+    api.start()
+    require(api.request("GET", "/api/v1/policies/strict-upgrade")["revision"] == 2, "policy revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/guarded")["policy_id"] == "strict-upgrade", "binding lost after restart")
+    require(api.request("GET", "/api/v1/plans/" + upgrade["id"])["state"] == "applied", "applied plan lost after restart")
+
+    tighter = [{"kind": "protect_components", "components": ["render-engine", "atlas-core"]}]
+    api.request("PUT", "/api/v1/policies/strict-upgrade", {"revision": 2, "name": "严格升级策略", "rules": tighter})
+    historical = api.request("GET", "/api/v1/plans/" + upgrade["id"])
+    require(historical["state"] == "applied" and len(historical["policy_findings"]) == 3, "policy update rewrote an applied plan")
+
+    api.request("DELETE", "/api/v1/policies/strict-upgrade", {"revision": 3}, 409)
+    unbound = api.request("POST", "/api/v1/environments/guarded/policy", {"policy_id": ""})
+    require("policy_id" not in unbound, "policy unbinding failed")
+    api.request("DELETE", "/api/v1/policies/strict-upgrade", {"revision": 2}, 409)
+    api.request("DELETE", "/api/v1/policies/strict-upgrade", {"revision": 3})
+    api.request("GET", "/api/v1/policies/strict-upgrade", expected=404)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "policy"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "policy": policy}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

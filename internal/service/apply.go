@@ -32,6 +32,9 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		if err := checkEnvironment(env, plan.BaseRevision); err != nil {
 			return err
 		}
+		if err := checkPolicyCurrent(state, env, plan); err != nil {
+			return err
+		}
 		if err := repository.ValidateSelection(state.Catalog, plan.Roots, plan.Resolved, true); err != nil {
 			return err
 		}

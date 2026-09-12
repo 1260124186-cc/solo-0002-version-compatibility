@@ -51,6 +51,21 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 升级策略
+
+策略集把多条升级规则组合起来，通过 `POST /api/v1/environments/{id}/policy` 绑定到环境（`policy_id` 为空字符串表示解绑，绑定与解绑不改变环境修订号）；创建环境时也可以直接带上 `policy_id`。当前支持三类规则，同一规则类型在一个策略集中最多出现一次：
+
+- `no_downgrade`：不允许任何组件降级，无参数。
+- `major_change`：要求每个组件版本变化的主版本跨度不超过 `max_major_delta`，0 表示禁止跨主版本。
+- `protect_components`：`components` 列出的组件不允许被移除。
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/policies -H 'Content-Type: application/json' -d '{"id":"strict-upgrade","name":"严格升级策略","rules":[{"kind":"no_downgrade"},{"kind":"major_change","max_major_delta":0},{"kind":"protect_components","components":["render-unit"]}]}'
+curl -s http://127.0.0.1:8092/api/v1/environments/staging/policy -H 'Content-Type: application/json' -d '{"policy_id":"strict-upgrade"}'
+```
+
+验证绑定环境的方案时，除依赖求解外会逐条评估规则，结果保存在方案的 `policy_findings` 中，并同时记录所用策略的 `policy_id` 与 `policy_revision`。任一规则未通过时方案保持或回到 `draft`，不能进入 `ready`。策略集通过 `PUT /api/v1/policies/{id}` 按修订号更新，每次更新递增修订号；验证之后策略内容或绑定关系发生变化时，应用方案返回 409，必须重新验证，不能沿用旧结论。未绑定策略的环境行为不变；已应用的方案保留当时的判断记录，不受后续策略调整影响。仍被环境绑定的策略集不能删除，解绑后可按修订号 `DELETE /api/v1/policies/{id}`。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,6 +77,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| POST /environments/{id}/policy | 绑定或解绑环境的升级策略集 |
+| GET、POST /policies | 分页查询、创建升级策略集 |
+| GET、PUT、DELETE /policies/{id} | 查看、按修订号更新、删除未绑定的策略集 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -77,6 +95,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
 - 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 最多 200 个策略集，每个策略集 1–32 条规则，保护组件规则最多列出 500 个组件。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
@@ -94,9 +113,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py policy
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消，以及策略维护、绑定、逐条判断、策略修订失效和已应用方案保护。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
@@ -107,7 +127,8 @@ python3 checks/workflow.py upgrade
 - `internal/domain`：实体、校验及状态规则。
 - `internal/repository`：状态副本、持久化、独占锁和启动校验。
 - `internal/resolution`：回溯求解、约束证据及版本差异。
-- `internal/service`：组件、环境、方案与事件流程。
+- `internal/policy`：升级策略规则求值。
+- `internal/service`：组件、环境、方案、策略与事件流程。
 - `internal/httpapi`：HTTP 路由、请求边界及响应。
 - `internal/config`：环境配置。
 - `checks`：公开 HTTP 运行检查。

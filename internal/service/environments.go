@@ -14,6 +14,11 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 	if err := domain.ValidateText(input.Name, "name", 1, 120); err != nil {
 		return domain.Environment{}, err
 	}
+	if input.PolicyID != "" {
+		if err := domain.ValidateID(input.PolicyID); err != nil {
+			return domain.Environment{}, err
+		}
+	}
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
 		return domain.Environment{}, err
@@ -26,10 +31,15 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 		return domain.Environment{}, err
 	}
 	at := now()
-	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CreatedAt: at, UpdatedAt: at}
+	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, PolicyID: input.PolicyID, Revision: 1, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		if err := checkCatalog(resolved.CatalogRevision, current); err != nil {
 			return err
+		}
+		if input.PolicyID != "" {
+			if _, exists := current.Policies[input.PolicyID]; !exists {
+				return domain.Missing("policy", input.PolicyID)
+			}
 		}
 		if _, exists := current.Environments[input.ID]; exists {
 			return domain.Conflict("environment already exists")

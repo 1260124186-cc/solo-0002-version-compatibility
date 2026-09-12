@@ -8,14 +8,22 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil || s.Policies == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
 		return fmt.Errorf("invalid catalog revision or component count")
 	}
-	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Events) > 10000 {
+	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Policies) > domain.MaxPolicySets || len(s.Events) > 10000 {
 		return fmt.Errorf("persisted collection exceeds capacity")
+	}
+	for id, set := range s.Policies {
+		if id != set.ID || set.Revision == 0 {
+			return fmt.Errorf("invalid policy identity or revision")
+		}
+		if err := domain.ValidatePolicySet(id, set.Name, set.Rules); err != nil {
+			return err
+		}
 	}
 	for id, component := range s.Catalog.Components {
 		if s.Catalog.Releases[id] == nil {
@@ -65,6 +73,11 @@ func validateState(s *State) error {
 		if err := domain.ValidateText(env.Name, "name", 1, 120); err != nil {
 			return err
 		}
+		if env.PolicyID != "" {
+			if _, ok := s.Policies[env.PolicyID]; !ok {
+				return fmt.Errorf("environment references a missing policy")
+			}
+		}
 		if err := ValidateSelection(s.Catalog, env.Roots, env.Resolved, true); err != nil {
 			return err
 		}
@@ -88,6 +101,19 @@ func validateState(s *State) error {
 			}
 		default:
 			return fmt.Errorf("invalid plan state")
+		}
+		// The policy record is a historical snapshot of the validation; it is
+		// never re-evaluated against the current policy at startup.
+		if (plan.PolicyID == "") != (plan.PolicyRevision == 0) || (plan.PolicyID == "") != (len(plan.PolicyFindings) == 0) {
+			return fmt.Errorf("inconsistent plan policy record")
+		}
+		for _, finding := range plan.PolicyFindings {
+			if err := domain.ValidatePolicyRule(finding.Rule); err != nil {
+				return err
+			}
+			if !finding.Passed && (plan.State == domain.Ready || plan.State == domain.Applied) {
+				return fmt.Errorf("applicable plan contains a failed policy finding")
+			}
 		}
 	}
 	var previous uint64

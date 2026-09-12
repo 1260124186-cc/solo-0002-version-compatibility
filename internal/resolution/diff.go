@@ -19,17 +19,17 @@ func Diff(before, after map[string]string) []domain.Change {
 		if oldVersion == newVersion {
 			continue
 		}
-		kind := "upgrade"
+		kind := domain.ChangeUpgrade
 		switch {
 		case oldVersion == "":
-			kind = "add"
+			kind = domain.ChangeAdd
 		case newVersion == "":
-			kind = "remove"
+			kind = domain.ChangeRemove
 		default:
 			oldParsed, oldErr := semver.Parse(oldVersion)
 			newParsed, newErr := semver.Parse(newVersion)
 			if oldErr == nil && newErr == nil && newParsed.Compare(oldParsed) < 0 {
-				kind = "downgrade"
+				kind = domain.ChangeDowngrade
 			}
 		}
 		changes = append(changes, domain.Change{ComponentID: id, From: oldVersion, To: newVersion, Kind: kind})

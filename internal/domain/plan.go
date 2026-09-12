@@ -9,6 +9,13 @@ const (
 	Cancelled = "cancelled"
 )
 
+const (
+	ChangeAdd       = "add"
+	ChangeRemove    = "remove"
+	ChangeUpgrade   = "upgrade"
+	ChangeDowngrade = "downgrade"
+)
+
 type Change struct {
 	ComponentID string `json:"component_id"`
 	From        string `json:"from,omitempty"`
@@ -25,6 +32,9 @@ type Plan struct {
 	Roots           map[string]string `json:"roots"`
 	Resolved        map[string]string `json:"resolved"`
 	Changes         []Change          `json:"changes"`
+	PolicyID        string            `json:"policy_id,omitempty"`
+	PolicyRevision  uint64            `json:"policy_revision,omitempty"`
+	PolicyFindings  []PolicyFinding   `json:"policy_findings,omitempty"`
 	State           string            `json:"state"`
 	Reason          string            `json:"reason"`
 	CreatedAt       time.Time         `json:"created_at"`
