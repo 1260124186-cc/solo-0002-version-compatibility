@@ -135,6 +135,32 @@ def resolve(api):
     release(api, "cycle-beta", "1.0.0", {"cycle-alpha": ">=1.0.0 <2.0.0"})
     result = api.request("POST", "/api/v1/resolve", {"roots": {"cycle-alpha": "*"}})
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
+    for index, bad in enumerate((">=1.0.0 <2.0.0 ||", "|| >=1.0.0", ">=1.0.0 || <2.0.0 ||",
+                                 ">=1.0.0 ||| <2.0.0", "x" * 257)):
+        api.request("POST", "/api/v1/components/atlas-core/releases",
+                    {"version": f"9.9.{index}", "requires": {"render-engine": bad}}, 400)
+        api.request("POST", "/api/v1/resolve", {"roots": {"atlas-core": bad}}, 400)
+    for name in ("union-lib", "union-app"):
+        component(api, name)
+    for version in ("1.0.0", "1.5.0", "2.0.0", "3.1.0", "4.0.0"):
+        release(api, "union-lib", version)
+    release(api, "union-app", "1.0.0",
+            {"union-lib": ">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0"})
+    result = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"union-lib": ">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0"}})
+    require(result["resolved"]["union-lib"] == "3.1.0", "union root did not prefer the newest in-range version")
+    result = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"union-lib": ">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0",
+                                    "union-app": "*"}})
+    require(result["resolved"]["union-lib"] == "3.1.0"
+            and result["resolved"]["union-app"] == "1.0.0", "transitive union constraint was not propagated")
+    edge = next(edge for edge in result["edges"] if edge["to"] == "union-lib")
+    require(edge["constraint"] == ">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0", "union constraint text was not preserved on the edge")
+    api.request("POST", "/api/v1/resolve",
+                {"roots": {"union-app": "*", "union-lib": ">=2.0.0 <3.0.0"}}, 422)
+    result = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"union-lib": "2.0.0 || *"}})
+    require(result["resolved"]["union-lib"] == "4.0.0", "star branch of a union did not match every version")
 
 
 def upgrade(api):
@@ -159,10 +185,21 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    component(api, "union-lib")
+    component(api, "union-app")
+    for version in ("1.0.0", "2.0.0", "3.0.0", "4.0.0"):
+        release(api, "union-lib", version)
+    release(api, "union-app", "1.0.0", {"union-lib": ">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0"})
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    result = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"union-app": "*"}})
+    require(result["resolved"].get("union-lib") == "3.0.0", "union constraint changed meaning after restart")
+    result = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"union-lib": ">=1.0.0 <2.0.0 || >=3.0.0 <4.0.0"}})
+    require(result["resolved"]["union-lib"] == "3.0.0", "reloaded union root constraint rejected the 3.x range")
 
 
 def main():
