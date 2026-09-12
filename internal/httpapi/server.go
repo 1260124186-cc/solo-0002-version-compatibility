@@ -27,6 +27,7 @@ func New(s *service.Service, logger *slog.Logger, timeout time.Duration) http.Ha
 	a.route(mux, "/healthz", map[string]http.HandlerFunc{"GET": a.health})
 	a.route(mux, "/api/v1/components", map[string]http.HandlerFunc{"GET": a.components, "POST": a.createComponent})
 	a.route(mux, "/api/v1/components/{id}", map[string]http.HandlerFunc{"GET": a.component})
+	a.route(mux, "/api/v1/components/{id}/rename", map[string]http.HandlerFunc{"POST": a.renameComponent})
 	a.route(mux, "/api/v1/components/{id}/releases", map[string]http.HandlerFunc{"GET": a.releases, "POST": a.addRelease})
 	a.route(mux, "/api/v1/components/{id}/releases/{version}/withdraw", map[string]http.HandlerFunc{"POST": a.withdraw})
 	a.route(mux, "/api/v1/resolve", map[string]http.HandlerFunc{"POST": a.resolve})

@@ -29,6 +29,10 @@ type ReleaseInput struct {
 	Requires map[string]string `json:"requires"`
 }
 
+type RenameInput struct {
+	NewID string `json:"new_id"`
+}
+
 type Catalog struct {
 	Revision   uint64                        `json:"revision"`
 	Components map[string]Component          `json:"components"`

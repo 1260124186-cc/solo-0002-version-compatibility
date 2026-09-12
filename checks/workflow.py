@@ -119,6 +119,59 @@ def catalog(api):
     require(len(result["items"]) == 1 and result["items"][0]["state"] == "withdrawn", "durable version state changed after restart")
     events = api.request("GET", "/api/v1/events")["items"]
     require([event["action"] for event in events] == ["created", "added", "withdrawn"], "failed writes altered events")
+    rename(api)
+
+
+def rename(api):
+    component(api, "legacy-core")
+    component(api, "plugin-host")
+    release(api, "legacy-core", "1.0.0")
+    release(api, "plugin-host", "1.0.0", {"legacy-core": "^1.0.0"})
+    release(api, "plugin-host", "2.0.0", {"legacy-core": "^1.0.0"})
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "rename-env", "name": "重命名环境",
+                       "roots": {"legacy-core": "1.0.0", "plugin-host": "1.0.0"}}, 201)
+    plan = api.request("POST", "/api/v1/plans", {"environment_id": "rename-env", "base_revision": env["revision"],
+                                                 "roots": {"legacy-core": "1.0.0", "plugin-host": "2.0.0"},
+                                                 "reason": "验证标识重命名"}, 201)
+    path = "/api/v1/plans/" + plan["id"]
+    api.request("POST", path + "/validate", {"revision": plan["revision"]})
+    api.request("POST", "/api/v1/components/legacy-core/rename", {"new_id": "plugin-host"}, 409)
+    api.request("POST", "/api/v1/components/legacy-core/rename", {"new_id": "Legacy-Core"}, 400)
+    api.request("POST", "/api/v1/components/legacy-core/rename", {"new_id": "legacy-core"}, 400)
+    api.request("POST", "/api/v1/components/missing-core/rename", {"new_id": "other-core"}, 404)
+    renamed = api.request("POST", "/api/v1/components/legacy-core/rename", {"new_id": "unified-core"})
+    require(renamed["id"] == "unified-core" and renamed["name"] == "legacy-core", "rename response is wrong")
+    api.request("GET", "/api/v1/components/legacy-core", expected=404)
+    moved = api.request("GET", "/api/v1/components/unified-core/releases")["items"]
+    require(len(moved) == 1 and moved[0]["component_id"] == "unified-core", "releases did not follow the rename")
+    host = api.request("GET", "/api/v1/components/plugin-host/releases")["items"]
+    require(all(item["requires"] == {"unified-core": "^1.0.0"} for item in host), "dependency constraints kept the old identifier")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"unified-core": "*"}})
+    require(result["resolved"] == {"unified-core": "1.0.0"}, "resolution did not hit the renamed component")
+    api.request("POST", "/api/v1/resolve", {"roots": {"legacy-core": "*"}}, 404)
+    current = api.request("GET", "/api/v1/environments/rename-env")
+    require(current["roots"] == {"plugin-host": "1.0.0", "unified-core": "1.0.0"}, "environment roots kept the old identifier")
+    require(current["resolved"] == {"plugin-host": "1.0.0", "unified-core": "1.0.0"}, "environment selection kept the old identifier")
+    stale = api.request("GET", path)
+    require(stale["roots"] == {"plugin-host": "2.0.0", "unified-core": "1.0.0"}, "plan roots kept the old identifier")
+    require(stale["resolved"].get("unified-core") == "1.0.0", "plan selection kept the old identifier")
+    api.request("POST", path + "/apply", {"revision": stale["revision"]}, 409)
+    ready = api.request("POST", path + "/validate", {"revision": stale["revision"]})
+    applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["resolved"] == {"plugin-host": "2.0.0", "unified-core": "1.0.0"}, "renamed plan did not apply")
+    trail = api.request("GET", "/api/v1/events?entity_id=unified-core")["items"]
+    require([event["action"] for event in trail] == ["created", "renamed"], "event trail lost the rename history")
+    require(trail[-1]["detail"] == "legacy-core", "rename event lost the old identifier")
+    require(api.request("GET", "/api/v1/events?entity_id=legacy-core")["items"] == [], "old identifier still owns events")
+    release_trail = api.request("GET", "/api/v1/events?entity_id=unified-core@1.0.0")["items"]
+    require([event["action"] for event in release_trail] == ["added"], "release events kept the old identifier")
+    api.stop()
+    api.start()
+    require(api.request("GET", path)["state"] == "applied", "applied plan lost after rename and restart")
+    persisted = api.request("GET", "/api/v1/environments/rename-env")
+    require(persisted["resolved"] == {"plugin-host": "2.0.0", "unified-core": "1.0.0"}, "environment history lost after restart")
+    require(api.request("GET", "/api/v1/components/unified-core")["name"] == "legacy-core", "renamed component lost after restart")
 
 
 def resolve(api):
