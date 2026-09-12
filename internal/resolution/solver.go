@@ -2,7 +2,6 @@ package resolution
 
 import (
 	"context"
-	"fmt"
 
 	"solo-0002-version-compatibility/internal/domain"
 	"solo-0002-version-compatibility/internal/semver"
@@ -14,13 +13,12 @@ type Solver struct {
 }
 
 type search struct {
-	ctx       context.Context
-	catalog   map[string][]candidate
-	roots     map[string]semver.Constraint
-	steps     int
-	maxSteps  int
-	maxNodes  int
-	conflicts []string
+	ctx      context.Context
+	catalog  map[string][]candidate
+	roots    map[string]semver.Constraint
+	steps    int
+	maxSteps int
+	maxNodes int
 }
 
 func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
@@ -51,12 +49,16 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		}
 		work.roots[id] = constraint
 	}
-	selected, err := work.solve(make(map[string]candidate))
+	selected, failure, err := work.solve(make(map[string]candidate))
 	if err != nil {
 		return domain.Resolution{}, err
 	}
 	if selected == nil {
-		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints", Conflicts: work.conflicts}
+		if failure == nil {
+			failure = newConflictSet()
+		}
+		legacy, report := render(failure.minimize(compiled))
+		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints", Conflicts: legacy, Conflict: report}
 	}
 	result := domain.Resolution{CatalogRevision: catalog.Revision, Resolved: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
 	for _, id := range domain.SortedKeys(selected) {
@@ -69,32 +71,36 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 	return result, nil
 }
 
-func (s *search) solve(selected map[string]candidate) (map[string]candidate, error) {
+// solve searches for a compatible selection. When it fails it also returns
+// the set of requirements responsible for the failure: a set that no
+// assignment extending the current one can satisfy, so the top-level failure
+// describes an actual contradiction rather than every constraint seen.
+func (s *search) solve(selected map[string]candidate) (map[string]candidate, *conflictSet, error) {
 	if err := s.ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s.steps++
 	if s.steps > s.maxSteps {
-		return nil, domain.Limit("dependency search exhausted its step budget")
+		return nil, nil, domain.Limit("dependency search exhausted its step budget")
 	}
 	needs := s.requirements(selected)
 	if len(needs) > s.maxNodes {
-		return nil, domain.Limit("dependency graph exceeds component limit")
+		return nil, nil, domain.Limit("dependency graph exceeds component limit")
 	}
 	unresolved := ""
 	for _, id := range domain.SortedKeys(needs) {
 		if chosen, ok := selected[id]; ok {
 			if !matchesAll(chosen.version, needs[id]) {
-				s.explain(id, needs[id])
-				return nil, nil
+				return nil, newConflictSet().addAll(needs[id]), nil
 			}
 		} else if unresolved == "" {
 			unresolved = id
 		}
 	}
 	if unresolved == "" {
-		return selected, nil
+		return selected, nil, nil
 	}
+	var failure *conflictSet
 	for _, choice := range s.catalog[unresolved] {
 		if !matchesAll(choice.version, needs[unresolved]) {
 			continue
@@ -104,50 +110,34 @@ func (s *search) solve(selected map[string]candidate) (map[string]candidate, err
 			next[id] = value
 		}
 		next[unresolved] = choice
-		result, err := s.solve(next)
+		result, sub, err := s.solve(next)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if result != nil {
-			return result, nil
+			return result, nil, nil
 		}
+		if failure == nil {
+			failure = newConflictSet().addAll(needs[unresolved])
+		}
+		failure.merge(sub)
 	}
-	s.explain(unresolved, needs[unresolved])
-	return nil, nil
+	if failure == nil {
+		failure = newConflictSet().addAll(needs[unresolved])
+	}
+	return nil, failure, nil
 }
 
 func (s *search) requirements(selected map[string]candidate) map[string][]requirement {
 	needs := make(map[string][]requirement)
 	for _, id := range domain.SortedKeys(s.roots) {
-		needs[id] = append(needs[id], requirement{from: "root", constraint: s.roots[id]})
+		needs[id] = append(needs[id], requirement{component: id, from: "root", constraint: s.roots[id]})
 	}
 	for _, id := range domain.SortedKeys(selected) {
 		chosen := selected[id]
 		for _, dep := range domain.SortedKeys(chosen.dependencies) {
-			needs[dep] = append(needs[dep], requirement{from: id + "@" + chosen.release.Version, constraint: chosen.dependencies[dep]})
+			needs[dep] = append(needs[dep], requirement{component: dep, from: id, version: chosen.release.Version, constraint: chosen.dependencies[dep]})
 		}
 	}
 	return needs
-}
-
-func (s *search) explain(id string, needs []requirement) {
-	if len(s.conflicts) >= 8 {
-		return
-	}
-	for _, need := range needs {
-		item := fmt.Sprintf("%s requires %s %s", need.from, id, need.constraint.Raw)
-		found := false
-		for _, existing := range s.conflicts {
-			if existing == item {
-				found = true
-				break
-			}
-		}
-		if !found {
-			s.conflicts = append(s.conflicts, item)
-		}
-		if len(s.conflicts) >= 8 {
-			return
-		}
-	}
 }

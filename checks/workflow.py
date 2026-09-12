@@ -129,12 +129,38 @@ def resolve(api):
     require(result["resolved"]["render-engine"] == "1.0.0", "search did not backtrack")
     result = api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "2.0.0", "atlas-core": "^1.0.0"}}, 422)
     require(result["error"]["code"] == "no_solution" and result["error"]["conflicts"], "missing conflict evidence")
+    conflict = result["error"].get("conflict")
+    require(conflict and conflict["components"] == ["atlas-core", "render-engine"], "structured conflict missing or wrong")
+    require(len(conflict["causes"]) <= 8, "conflict evidence not bounded")
     for name in ("cycle-alpha", "cycle-beta"):
         component(api, name)
     release(api, "cycle-alpha", "1.0.0", {"cycle-beta": "~1.0.0"})
     release(api, "cycle-beta", "1.0.0", {"cycle-alpha": ">=1.0.0 <2.0.0"})
     result = api.request("POST", "/api/v1/resolve", {"roots": {"cycle-alpha": "*"}})
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
+    for name in ("shared-core", "left-wing", "right-wing"):
+        component(api, name)
+    release(api, "shared-core", "1.0.0")
+    release(api, "shared-core", "2.0.0")
+    release(api, "left-wing", "1.0.0", {"shared-core": ">=2.0.0"})
+    release(api, "right-wing", "1.0.0", {"shared-core": "<2.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"left-wing": "*", "right-wing": "*"}}, 422)
+    conflict = result["error"].get("conflict")
+    require(conflict and result["error"]["conflicts"], "merged-constraint conflict evidence missing")
+    require(conflict["components"] == ["left-wing", "right-wing", "shared-core"], "merged-constraint conflict components wrong")
+    require(0 < len(conflict["causes"]) <= 8, "merged-constraint conflict evidence not bounded")
+    require(all(cause["component"] == "shared-core" for cause in conflict["causes"]), "conflict not focused on shared-core")
+    sources = sorted((cause["source"], cause.get("source_component", ""), cause["constraint"]) for cause in conflict["causes"])
+    require(sources == [("parent", "left-wing", ">=2.0.0"), ("parent", "right-wing", "<2.0.0")], "merged-constraint conflict causes wrong")
+    for name in ("loop-one", "loop-two"):
+        component(api, name)
+    release(api, "loop-one", "1.0.0", {"loop-two": ">=2.0.0"})
+    release(api, "loop-two", "2.0.0", {"loop-one": ">=2.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"loop-one": "*"}}, 422)
+    conflict = result["error"].get("conflict")
+    require(conflict and conflict["causes"], "dependency cycle conflict evidence missing")
+    require(set(conflict["components"]) == {"loop-one", "loop-two"}, "dependency cycle conflict components wrong")
+    require(len(conflict["causes"]) <= 8, "dependency cycle conflict evidence not bounded")
 
 
 def upgrade(api):

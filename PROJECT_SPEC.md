@@ -31,7 +31,7 @@
 - cmd/server：服务启动与平滑退出。
 
 ## 接口
-所有业务接口以 /api/v1 开头。components 及其 releases 维护组件；resolve 计算版本集合；environments 管理目标环境；plans 及 validate、apply、cancel 动作控制升级；events 查看变更轨迹。/healthz 返回可用状态。响应均为 JSON；错误含 code、detail 及可选 conflicts。
+所有业务接口以 /api/v1 开头。components 及其 releases 维护组件；resolve 计算版本集合；environments 管理目标环境；plans 及 validate、apply、cancel 动作控制升级；events 查看变更轨迹。/healthz 返回可用状态。响应均为 JSON；错误含 code、detail 及可选 conflicts；无解时另附结构化 conflict，以近似最小集合指出冲突组件、矛盾条件及其根约束或父组件来源。
 
 ## 持久化与并发
 数据写入独立运行目录的 state.json，在同目录临时文件完成写入并执行 fsync 后原子替换；只有持久化成功才替换内存状态。进程使用系统文件锁阻止共享数据目录并发启动。进程内修改串行化，解析使用状态副本；提交时重新检查修订号。服务面向受信任网络，默认监听回环地址。

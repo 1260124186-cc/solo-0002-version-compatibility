@@ -15,7 +15,9 @@ type candidate struct {
 }
 
 type requirement struct {
+	component  string
 	from       string
+	version    string
 	constraint semver.Constraint
 }
 
