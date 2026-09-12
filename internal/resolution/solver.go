@@ -468,19 +468,17 @@ func (s *search) restore(token continuationToken) error {
 		if raw.Cursor >= len(candidates) {
 			return malformed
 		}
-		// Replay the deterministic candidate loop over the parent Base; it
-		// must land on the recorded cursor.
-		matched := -1
-		for cursor, choice := range candidates {
-			if matchesAll(choice.version, s.requirements(base)[raw.Target]) {
-				matched = cursor
-				break
-			}
-		}
-		if matched != raw.Cursor {
+		// The cursor may point at any matching candidate: after a child branch
+		// fails, a resumed frame advances past earlier candidates, so the
+		// recorded choice is not necessarily the first one that matches its
+		// target's own requirements. Only verify that it is a feasible choice
+		// over the replayed parent Base (cursors at skipped, higher candidates
+		// cannot be forged because the token is HMAC-signed).
+		choice := candidates[raw.Cursor]
+		if !matchesAll(choice.version, s.requirements(base)[raw.Target]) {
 			return malformed
 		}
-		base[raw.Target] = candidates[raw.Cursor]
+		base[raw.Target] = choice
 		seen[raw.Target] = true
 		replayed = append(replayed, frame{
 			Target: raw.Target,

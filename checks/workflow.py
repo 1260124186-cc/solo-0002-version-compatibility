@@ -255,6 +255,63 @@ def resume(api):
     stale = api.request("POST", "/api/v1/resolve", {"continuation_token": token}, 409)
     require(stale["error"]["code"] == "conflict", "stale token not rejected")
 
+    # Paged backtracking. z-root picks a-core, whose highest version 2.0.0
+    # requires an unsatisfiable b-core ^2.0.0; the search must fall back to
+    # a-core 1.0.0 (which pulls in c-core). A token paused after that fallback
+    # holds a cursor past the first matching candidate and must resume instead
+    # of being rejected as malformed. The paged answer, edges and step count
+    # must match a one-shot solve.
+    for name in ("bt-a", "bt-b", "bt-c", "bt-z"):
+        component(api, name)
+    release(api, "bt-b", "1.0.0")
+    release(api, "bt-c", "1.0.0")
+    release(api, "bt-a", "1.0.0", {"bt-c": "*"})
+    release(api, "bt-a", "2.0.0", {"bt-b": "^2.0.0"})
+    release(api, "bt-z", "1.0.0", {"bt-a": "*"})
+    bt_roots = {"bt-z": "*"}
+    bt_direct = api.request("POST", "/api/v1/resolve", {"roots": bt_roots})
+    require(bt_direct["resolved"] == {"bt-z": "1.0.0", "bt-a": "1.0.0", "bt-c": "1.0.0"},
+            "one-shot backtracking picked the wrong a-core version")
+    # Drive the same search one step per page; the paged answer, edges and
+    # step count must equal the one-shot solve.
+    status, bt_paged = paged_resolve(api, bt_roots, 1)
+    require(status == 200 and bt_paged["complete"], "paged backtracking must complete")
+    require(bt_paged["resolved"] == bt_direct["resolved"],
+            "paged backtracking result must equal one-shot")
+    require(bt_paged["edges"] == bt_direct["edges"],
+            "paged backtracking edges must equal one-shot")
+    require(bt_paged["steps"] == bt_direct["steps"],
+            "paged backtracking step count must equal one-shot")
+
+    # Capture a token whose provisional selection already reflects the a-core
+    # 1.0.0 fallback, i.e. a frame cursor past the first matching candidate.
+    fallback_token = None
+    token = None
+    for _ in range(bt_direct["steps"] + 1):
+        body = ({"roots": bt_roots, "step_budget": 1} if token is None
+                else {"continuation_token": token, "step_budget": 1})
+        page = api.request("POST", "/api/v1/resolve", body)
+        if page["complete"]:
+            break
+        if page["provisional"]["selected"].get("bt-a") == "1.0.0":
+            fallback_token = page["continuation_token"]
+        token = page["continuation_token"]
+    require(fallback_token is not None, "test never paused on a post-fallback frame")
+    # That token resumes cleanly (it may finish at once or pause again), never
+    # 400 malformed, and converges to the one-shot result.
+    status, resumed = api.raw_request(
+        "POST", "/api/v1/resolve",
+        {"continuation_token": fallback_token, "step_budget": 1})
+    require(status == 200, "a post-fallback continuation token must resume, not 400")
+    if not resumed["complete"]:
+        status, resumed = api.raw_request(
+            "POST", "/api/v1/resolve",
+            {"continuation_token": resumed["continuation_token"]})
+    require(status == 200 and resumed["complete"]
+            and resumed["resolved"] == bt_direct["resolved"]
+            and resumed["steps"] == bt_direct["steps"],
+            "resumed fallback search must converge to the one-shot result")
+
     # No-solution evidence is produced only at the end and is identical for a
     # one-shot and a multi-page search.
     build_chain(api, "dead-%02d", 40)
