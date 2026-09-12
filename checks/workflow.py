@@ -159,10 +159,32 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    relaxed = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 2, "roots": {"render-engine": "^2.0.0"}, "reason": "放宽根约束表达式"}, 201)
+    require(relaxed["root_changes"] == [], "draft plan should not report root changes")
+    relaxed_path = "/api/v1/plans/" + relaxed["id"]
+    ready = api.request("POST", relaxed_path + "/validate", {"revision": 1})
+    require(ready["changes"] == [], "constraint-only plan reported version changes")
+    require(ready["root_changes"] == [{"component_id": "render-engine", "from": "2.0.0", "to": "^2.0.0", "kind": "constraint"}], "constraint relaxation not reported")
+    applied = api.request("POST", relaxed_path + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["roots"] == {"render-engine": "^2.0.0"} and applied["environment"]["revision"] == 3, "relaxed roots were not applied")
+    widened = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 3, "roots": {"render-engine": "^2.0.0", "panel-shell": "1.0.0"}, "reason": "新增根组件"}, 201)
+    ready = api.request("POST", "/api/v1/plans/" + widened["id"] + "/validate", {"revision": 1})
+    require(ready["root_changes"] == [{"component_id": "panel-shell", "to": "1.0.0", "kind": "add"}], "root addition not reported")
+    require(ready["changes"] == [{"component_id": "panel-shell", "to": "1.0.0", "kind": "add"}], "version addition not reported")
+    applied = api.request("POST", "/api/v1/plans/" + widened["id"] + "/apply", {"revision": ready["revision"]})
+    narrowed = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 4, "roots": {"render-engine": "^2.0.0"}, "reason": "移除根组件"}, 201)
+    narrowed_path = "/api/v1/plans/" + narrowed["id"]
+    ready = api.request("POST", narrowed_path + "/validate", {"revision": 1})
+    require(ready["root_changes"] == [{"component_id": "panel-shell", "from": "1.0.0", "kind": "remove"}], "root removal not reported")
+    require(ready["changes"] == [{"component_id": "panel-shell", "from": "1.0.0", "kind": "remove"}], "version removal not reported")
+    applied = api.request("POST", narrowed_path + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["roots"] == {"render-engine": "^2.0.0"} and applied["environment"]["revision"] == 5, "root removal was not applied")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 5, "environment revision lost after restart")
+    require(api.request("GET", relaxed_path)["root_changes"] == [{"component_id": "render-engine", "from": "2.0.0", "to": "^2.0.0", "kind": "constraint"}], "root changes lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration")["roots"] == {"render-engine": "^2.0.0"}, "relaxed roots lost after restart")
 
 
 def main():

@@ -24,7 +24,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 		return domain.Plan{}, err
 	}
 	at := now()
-	plan := domain.Plan{ID: id, EnvironmentID: input.EnvironmentID, BaseRevision: input.BaseRevision, Revision: 1, Roots: domain.CopyStrings(input.Roots), Resolved: make(map[string]string), Changes: make([]domain.Change, 0), State: domain.Draft, Reason: input.Reason, CreatedAt: at, UpdatedAt: at}
+	plan := domain.Plan{ID: id, EnvironmentID: input.EnvironmentID, BaseRevision: input.BaseRevision, Revision: 1, Roots: domain.CopyStrings(input.Roots), Resolved: make(map[string]string), Changes: make([]domain.Change, 0), RootChanges: make([]domain.RootChange, 0), State: domain.Draft, Reason: input.Reason, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(state *repository.State) error {
 		env, exists := state.Environments[input.EnvironmentID]
 		if !exists {
@@ -116,6 +116,7 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		return plan, err
 	}
 	changes := resolution.Diff(env.Resolved, result.Resolved)
+	rootChanges := resolution.DiffRoots(env.Roots, plan.Roots)
 	var updated domain.Plan
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		latest := current.Plans[id]
@@ -134,6 +135,7 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		latest.State = domain.Ready
 		latest.Resolved = result.Resolved
 		latest.Changes = changes
+		latest.RootChanges = rootChanges
 		latest.CatalogRevision = result.CatalogRevision
 		latest.Revision++
 		latest.UpdatedAt = now()

@@ -16,6 +16,15 @@ type Change struct {
 	Kind        string `json:"kind"`
 }
 
+// RootChange describes how a plan alters the environment's root requirements.
+// From and To hold constraint expressions; Kind is add, remove or constraint.
+type RootChange struct {
+	ComponentID string `json:"component_id"`
+	From        string `json:"from,omitempty"`
+	To          string `json:"to,omitempty"`
+	Kind        string `json:"kind"`
+}
+
 type Plan struct {
 	ID              string            `json:"id"`
 	EnvironmentID   string            `json:"environment_id"`
@@ -25,6 +34,7 @@ type Plan struct {
 	Roots           map[string]string `json:"roots"`
 	Resolved        map[string]string `json:"resolved"`
 	Changes         []Change          `json:"changes"`
+	RootChanges     []RootChange      `json:"root_changes"`
 	State           string            `json:"state"`
 	Reason          string            `json:"reason"`
 	CreatedAt       time.Time         `json:"created_at"`

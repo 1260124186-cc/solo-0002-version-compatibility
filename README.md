@@ -45,7 +45,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots` 及 `reason`。返回的方案最初为 `draft`、`revision=1`。依次调用：
 
-1. `POST /api/v1/plans/{id}/validate`，发送 `{"revision":1}`。成功返回 `ready` 方案，其 `changes` 描述新增、移除、升级或降级；后续请求必须使用返回的新修订号。
+1. `POST /api/v1/plans/{id}/validate`，发送 `{"revision":1}`。成功返回 `ready` 方案，其 `changes` 描述已解析版本的新增、移除、升级或降级，`root_changes` 单独描述根依赖差异：新增根组件（`add`）、移除根组件（`remove`）或约束表达式修改（`constraint`，保留修改前后的表达式）。仅放宽约束而未改变版本集合时 `changes` 为空，但 `root_changes` 仍会记录，应用后环境采用新的根依赖。后续请求必须使用返回的新修订号。
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
 3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
 
