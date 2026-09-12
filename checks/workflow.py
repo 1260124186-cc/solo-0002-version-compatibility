@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -117,6 +118,18 @@ def catalog(api):
     api.start()
     result = api.request("GET", "/api/v1/components/atlas-core/releases")
     require(len(result["items"]) == 1 and result["items"][0]["state"] == "withdrawn", "durable version state changed after restart")
+    result = api.request("GET", "/api/v1/components/atlas-core/releases?state=withdrawn")
+    require(result["total"] == 1 and result["items"][0]["version"] == "1.0.0", "state filter did not match withdrawn release")
+    result = api.request("GET", "/api/v1/components/atlas-core/releases?state=available")
+    require(result["total"] == 0 and result["items"] == [], "state filter leaked a withdrawn release")
+    query = urllib.parse.urlencode({"constraint": ">=1.0.0 <2.0.0"})
+    result = api.request("GET", "/api/v1/components/atlas-core/releases?" + query)
+    require(result["total"] == 1, "constraint filter did not match persisted release")
+    query = urllib.parse.urlencode({"state": "withdrawn", "constraint": ">=2.0.0"})
+    result = api.request("GET", "/api/v1/components/atlas-core/releases?" + query)
+    require(result["total"] == 0, "combined filters did not intersect")
+    api.request("GET", "/api/v1/components/atlas-core/releases?state=archived", expected=400)
+    api.request("GET", "/api/v1/components/atlas-core/releases?constraint=not-a-constraint", expected=400)
     events = api.request("GET", "/api/v1/events")["items"]
     require([event["action"] for event in events] == ["created", "added", "withdrawn"], "failed writes altered events")
 

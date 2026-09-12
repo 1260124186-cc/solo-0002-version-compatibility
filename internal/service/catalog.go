@@ -83,16 +83,39 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 	return release, err
 }
 
-func (s *Service) ListReleases(ctx context.Context, id string) ([]domain.Release, error) {
-	state, err := s.repo.Snapshot(ctx)
+func (s *Service) ListReleases(ctx context.Context, id, state, constraint string) ([]domain.Release, error) {
+	if state != "" && state != domain.Available && state != domain.Withdrawn {
+		return nil, domain.Invalid("unknown release state %q", state)
+	}
+	var filter semver.Constraint
+	if constraint != "" {
+		parsed, err := semver.ParseConstraint(constraint)
+		if err != nil {
+			return nil, domain.Invalid("invalid constraint filter: %s", err)
+		}
+		filter = parsed
+	}
+	snapshot, err := s.repo.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, exists := state.Catalog.Components[id]; !exists {
+	if _, exists := snapshot.Catalog.Components[id]; !exists {
 		return nil, domain.Missing("component", id)
 	}
-	items := make([]domain.Release, 0, len(state.Catalog.Releases[id]))
-	for _, release := range state.Catalog.Releases[id] {
+	items := make([]domain.Release, 0, len(snapshot.Catalog.Releases[id]))
+	for _, release := range snapshot.Catalog.Releases[id] {
+		if state != "" && release.State != state {
+			continue
+		}
+		if constraint != "" {
+			version, err := semver.Parse(release.Version)
+			if err != nil {
+				return nil, err
+			}
+			if !filter.Matches(version) {
+				continue
+			}
+		}
 		items = append(items, release)
 	}
 	sort.Slice(items, func(i, j int) bool {

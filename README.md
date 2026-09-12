@@ -57,7 +57,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | --- | --- |
 | GET、POST /components | 分页查询、创建组件 |
 | GET /components/{id} | 获取组件详情 |
-| GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
+| GET、POST /components/{id}/releases | 按状态与约束筛选、版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
@@ -69,7 +69,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
 | GET /events | 按序号增量读取变更事件 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。版本列表可按 `state`（`available` 或 `withdrawn`）与 `constraint`（如 `>=1.2.0 <2.0.0`）组合筛选，筛选后的集合仍按版本降序分页，`total` 为筛选后数量；非法状态或无法解析的约束返回 400，不会当作未筛选。筛选仅用于查看，撤回版本不参与求解。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
 
 ## 约束及失败行为
 

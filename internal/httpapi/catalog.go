@@ -65,7 +65,7 @@ func (a *API) addRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) releases(w http.ResponseWriter, r *http.Request) {
-	if err := queryOnly(r, "offset", "limit"); err != nil {
+	if err := queryOnly(r, "offset", "limit", "state", "constraint"); err != nil {
 		fail(w, err)
 		return
 	}
@@ -74,12 +74,37 @@ func (a *API) releases(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	items, err := a.service.ListReleases(r.Context(), r.PathValue("id"))
+	state, constraint, err := releaseFilters(r)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	items, err := a.service.ListReleases(r.Context(), r.PathValue("id"), state, constraint)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	respond(w, http.StatusOK, pageOf(items, p))
+}
+
+// releaseFilters reads the optional state and constraint filters. A filter
+// that is present must carry a value; an empty one is never silently dropped.
+func releaseFilters(r *http.Request) (string, string, error) {
+	query := r.URL.Query()
+	var state, constraint string
+	if values, present := query["state"]; present {
+		if values[0] == "" {
+			return "", "", domain.Invalid("state filter must not be empty")
+		}
+		state = values[0]
+	}
+	if values, present := query["constraint"]; present {
+		if values[0] == "" {
+			return "", "", domain.Invalid("constraint filter must not be empty")
+		}
+		constraint = values[0]
+	}
+	return state, constraint, nil
 }
 
 func (a *API) withdraw(w http.ResponseWriter, r *http.Request) {
