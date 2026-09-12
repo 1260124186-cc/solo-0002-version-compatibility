@@ -185,6 +185,16 @@ def visibility(api):
     component(api, "stranger-app")
     release(api, "core-engine", "1.0.0")
     release(api, "core-facade", "1.0.0", {"core-engine": "^1.0.0"})
+    # An edge-level internal declaration on a same-family edge is accepted.
+    release(api, "core-facade", "1.1.0",
+            {"core-engine": {"constraint": "^1.0.0", "visibility": "internal"}})
+    facade = api.request("GET", "/api/v1/components/core-facade/releases")
+    require(any(item.get("internal_dependencies") == ["core-engine"] for item in facade["items"]),
+            "internal edge declaration was not persisted")
+    # An internal edge assertion against a public target is invalid input.
+    api.request("POST", "/api/v1/components/stranger-app/releases",
+                {"version": "1.0.0",
+                 "requires": {"core-facade": {"constraint": "*", "visibility": "internal"}}}, 400)
     result = api.request("POST", "/api/v1/resolve", {"roots": {"core-facade": "*"}})
     require(result["resolved"]["core-engine"] == "1.0.0",
             "internal component must resolve through a same-family entry point")
@@ -215,9 +225,10 @@ def visibility(api):
     release(api, "core-engine", "2.0.0", {"partner-bridge": "^1.0.0"})
     release(api, "partner-bridge", "1.0.0", {"core-engine": "^1.0.0"}, expected=422)
 
-    # An engine 2.x release that closes a legal same-family edge forces the
-    # solver to backtrack toward the legal 1.x set through facade 2.0.0.
-    release(api, "core-facade", "2.0.0")
+    # facade 2.x pulls engine 2.x, which needs partner-bridge; that bridge has
+    # no legal release (its back edge was refused), so resolution must backtrack
+    # to engine 1.x while keeping the newer, otherwise compatible facade.
+    release(api, "core-facade", "2.0.0", {"core-engine": "*"})
     result = api.request("POST", "/api/v1/resolve", {"roots": {"core-facade": "*"}})
     require(result["resolved"]["core-facade"] == "2.0.0"
             and result["resolved"]["core-engine"] == "1.0.0",

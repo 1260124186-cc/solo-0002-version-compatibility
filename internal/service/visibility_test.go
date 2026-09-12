@@ -27,9 +27,17 @@ func mustComponent(t *testing.T, s *Service, id, family, visibility string, cons
 	}
 }
 
+func reqInput(requires map[string]string) map[string]domain.RequirementInput {
+	result := make(map[string]domain.RequirementInput, len(requires))
+	for id, constraint := range requires {
+		result[id] = domain.RequirementInput{Constraint: constraint, Visibility: domain.Public}
+	}
+	return result
+}
+
 func mustRelease(t *testing.T, s *Service, id, version string, requires map[string]string) {
 	t.Helper()
-	if _, err := s.AddRelease(context.Background(), id, domain.ReleaseInput{Version: version, Requires: requires}); err != nil {
+	if _, err := s.AddRelease(context.Background(), id, domain.ReleaseInput{Version: version, Requires: reqInput(requires)}); err != nil {
 		t.Fatalf("add release %s@%s: %v", id, version, err)
 	}
 }
@@ -57,11 +65,11 @@ func TestAddReleaseEnforcesVisibility(t *testing.T) {
 	mustRelease(t, s, "core-facade", "1.0.0", map[string]string{"core-engine": "^1.0.0"})
 
 	// The trusted app is not on the allow list yet.
-	_, err := s.AddRelease(context.Background(), "trusted-app", domain.ReleaseInput{Version: "1.0.0", Requires: map[string]string{"core-engine": "*"}})
+	_, err := s.AddRelease(context.Background(), "trusted-app", domain.ReleaseInput{Version: "1.0.0", Requires: reqInput(map[string]string{"core-engine": "*"})})
 	expectCode(t, err, "visibility_denied")
 
 	// Cross-family access is rejected at registration.
-	_, err = s.AddRelease(context.Background(), "stranger-app", domain.ReleaseInput{Version: "1.0.0", Requires: map[string]string{"core-engine": "*"}})
+	_, err = s.AddRelease(context.Background(), "stranger-app", domain.ReleaseInput{Version: "1.0.0", Requires: reqInput(map[string]string{"core-engine": "*"})})
 	expectCode(t, err, "visibility_denied")
 }
 
@@ -151,7 +159,7 @@ func TestAllowedConsumerEndToEndCycle(t *testing.T) {
 
 	// Registering the ungranted cycle back edge is rejected at registration, so
 	// no release can ever carry an illegal edge into a resolution.
-	_, err := s.AddRelease(context.Background(), "partner-bridge", domain.ReleaseInput{Version: "1.0.0", Requires: map[string]string{"core-engine": "^1.0.0"}})
+	_, err := s.AddRelease(context.Background(), "partner-bridge", domain.ReleaseInput{Version: "1.0.0", Requires: reqInput(map[string]string{"core-engine": "^1.0.0"})})
 	expectCode(t, err, "visibility_denied")
 
 	// A fresh catalog granting the bridge access resolves the whole cycle. The

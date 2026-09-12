@@ -51,7 +51,9 @@ func (r *RequirementInput) UnmarshalJSON(data []byte) error {
 		Constraint string `json:"constraint"`
 		Visibility string `json:"visibility"`
 	}
-	if err := json.Unmarshal(data, &structured); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&structured); err != nil {
 		return err
 	}
 	if structured.Constraint == "" {

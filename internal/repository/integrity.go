@@ -58,7 +58,7 @@ func validateState(s *State) error {
 			if release.ComponentID != id || release.Version != version {
 				return fmt.Errorf("release key mismatch")
 			}
-			if err := domain.ValidateRelease(domain.ReleaseInput{Version: version, Requires: release.Requires}, id); err != nil {
+			if err := domain.ValidateRelease(domain.ReleaseInput{Version: version, Requires: domain.StoredRequirements(release.Requires, release.InternalDeps)}, id); err != nil {
 				return err
 			}
 			if release.State != domain.Available && release.State != domain.Withdrawn {
