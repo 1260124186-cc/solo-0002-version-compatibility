@@ -91,7 +91,7 @@ def release(api, name, version, requires=None, expected=201):
                        {"version": version, "requires": requires or {}}, expected)
 
 
-def lifecycle(api, name, state, reason, expected=200):
+def lifecycle_request(api, name, state, reason, expected=200):
     return api.request("POST", f"/api/v1/components/{name}/lifecycle",
                        {"state": state, "reason": reason}, expected)
 
@@ -132,71 +132,108 @@ def lifecycle(api):
     release(api, "legacy-api", "1.0.0")
     release(api, "consumer", "1.0.0", {"legacy-api": "^1.0.0"})
 
-    deprecated = lifecycle(api, "legacy-api", "deprecated", "停止增强")
-    require(deprecated["state"] == "deprecated" and deprecated["deprecated_at"], "deprecation not represented")
+    deprecated = lifecycle_request(api, "legacy-api", "deprecated", "停止增强")
+    require(deprecated["state"] == "deprecated" and deprecated["deprecated_at"],
+            "deprecation state or timestamp was not represented")
     release(api, "legacy-api", "1.1.0", expected=409)
     result = api.request("POST", "/api/v1/resolve", {"roots": {"legacy-api": "*"}})
-    require(result["resolved"]["legacy-api"] == "1.0.0", "deprecated component disappeared from resolution")
+    require(result["resolved"]["legacy-api"] == "1.0.0",
+            "a deprecated component disappeared from pure resolution")
 
     env = api.request("POST", "/api/v1/environments",
                       {"id": "existing", "name": "已有环境", "roots": {"consumer": "1.0.0"}}, 201)
-    require(env["resolved"]["legacy-api"] == "1.0.0", "deprecated component cannot be used by a new environment")
+    require(env["resolved"]["legacy-api"] == "1.0.0",
+            "a deprecated component could not remain available to a new environment")
 
-    lifecycle(api, "consumer", "deprecated", "观察期")
-    lifecycle(api, "consumer", "active", "重新启用")
-    lifecycle(api, "consumer", "retired", "active components cannot be retired directly", 409)
-    retired = lifecycle(api, "legacy-api", "retired", "停止新环境接入")
-    require(retired["state"] == "retired" and retired["retired_at"], "retirement not represented")
+    lifecycle_request(api, "consumer", "deprecated", "观察期")
+    lifecycle_request(api, "consumer", "active", "重新启用")
+    lifecycle_request(api, "consumer", "retired", "active components cannot retire directly", 409)
 
-    api.request("POST", "/api/v1/environments",
-                {"id": "blocked", "name": "新环境", "roots": {"consumer": "1.0.0"}}, 409)
-    result = api.request("POST", "/api/v1/resolve", {"roots": {"legacy-api": "*"}})
-    require(result["resolved"]["legacy-api"] == "1.0.0", "pure resolution incorrectly applied lifecycle admission")
-
-    body = {"environment_id": "existing", "base_revision": 1, "roots": {"consumer": "1.0.0"}, "reason": "保留旧组件"}
+    body = {
+        "environment_id": "existing",
+        "base_revision": 1,
+        "roots": {"consumer": "1.0.0"},
+        "reason": "下线前已验证的保留方案",
+    }
     plan = api.request("POST", "/api/v1/plans", body, 201)
     ready = api.request("POST", f"/api/v1/plans/{plan['id']}/validate", {"revision": 1})
-    require(ready["state"] == "ready", "existing environment cannot retain a retired component")
-    applied = api.request("POST", f"/api/v1/plans/{plan['id']}/apply", {"revision": ready["revision"]})
-    require(applied["environment"]["revision"] == 2, "existing environment plan failed")
+    require(ready["state"] == "ready", "a plan using a deprecated component could not validate")
+
+    retired = lifecycle_request(api, "legacy-api", "retired", "停止新环境接入")
+    require(retired["state"] == "retired" and retired["retired_at"],
+            "retirement state or timestamp was not represented")
+    api.request("POST", f"/api/v1/plans/{plan['id']}/apply",
+                {"revision": ready["revision"]}, 409)
+    require(api.request("GET", "/api/v1/environments/existing")["revision"] == 1,
+            "a plan made stale by retirement mutated the environment")
+
+    ready = api.request("POST", f"/api/v1/plans/{plan['id']}/validate",
+                        {"revision": ready["revision"]})
+    applied = api.request("POST", f"/api/v1/plans/{plan['id']}/apply",
+                          {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 2
+            and applied["environment"]["resolved"]["legacy-api"] == "1.0.0",
+            "an existing environment could not retain a retired component")
+    api.request("POST", "/api/v1/environments",
+                {"id": "blocked", "name": "新环境", "roots": {"consumer": "1.0.0"}}, 409)
+
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"legacy-api": "*"}})
+    require(result["resolved"]["legacy-api"] == "1.0.0",
+            "pure resolution incorrectly applied retired-component admission")
     api.request("POST", "/api/v1/components/legacy-api/releases/1.0.0/withdraw", {}, 409)
 
-    restored = lifecycle(api, "legacy-api", "active", "恢复维护")
-    require(restored["state"] == "active" and not restored.get("retired_at") and not restored.get("deprecated_at"),
+    restored = lifecycle_request(api, "legacy-api", "active", "恢复维护")
+    require(restored["state"] == "active"
+            and not restored.get("retired_at")
+            and not restored.get("deprecated_at"),
             "restoration did not clear lifecycle timestamps")
     require([(item["from"], item["to"]) for item in restored["lifecycle"]] ==
             [("active", "deprecated"), ("deprecated", "retired"), ("retired", "active")],
             "lifecycle history is incomplete")
+    release(api, "legacy-api", "1.1.0")
     api.request("POST", "/api/v1/environments",
-                {"id": "restored-env", "name": "恢复后环境", "roots": {"legacy-api": "1.0.0"}}, 201)
+                {"id": "restored-env", "name": "恢复后环境",
+                 "roots": {"legacy-api": "1.1.0"}}, 201)
 
     component(api, "retired-add")
     release(api, "retired-add", "1.0.0")
-    lifecycle(api, "retired-add", "deprecated", "仅禁止新接入")
-    lifecycle(api, "retired-add", "retired", "禁止加入已有环境")
-    blocked = {
+    lifecycle_request(api, "retired-add", "deprecated", "仅禁止新接入")
+    lifecycle_request(api, "retired-add", "retired", "禁止加入已有环境")
+    blocked_plan_body = {
         "environment_id": "existing",
         "base_revision": 2,
         "roots": {"consumer": "1.0.0", "retired-add": "1.0.0"},
         "reason": "尝试加入已下线组件",
     }
-    blocked_plan = api.request("POST", "/api/v1/plans", blocked, 201)
-    api.request("POST", f"/api/v1/plans/{blocked_plan['id']}/validate", {"revision": 1}, 409)
+    blocked_plan = api.request("POST", "/api/v1/plans", blocked_plan_body, 201)
+    api.request("POST", f"/api/v1/plans/{blocked_plan['id']}/validate",
+                {"revision": 1}, 409)
+    require(api.request("GET", f"/api/v1/plans/{blocked_plan['id']}")["state"] == "draft",
+            "failed validation did not keep the rejected plan in draft")
 
-    lifecycle(api, "legacy-api", "unknown", "bad state", 400)
-    lifecycle(api, "legacy-api", "deprecated", "", 400)
+    lifecycle_request(api, "legacy-api", "unknown", "bad state", 400)
+    lifecycle_request(api, "legacy-api", "deprecated", "", 400)
     events = api.request("GET", "/api/v1/events?entity_id=legacy-api")["items"]
     lifecycle_events = [event for event in events if event["action"] in
                         ("deprecated", "retired", "restored", "reactivated")]
-    require([event["action"] for event in lifecycle_events] == ["deprecated", "retired", "restored"],
-            "lifecycle events missing or out of order")
-    require(all(event["metadata"]["reason"] for event in lifecycle_events), "lifecycle event lacks reason")
+    require([event["action"] for event in lifecycle_events] ==
+            ["deprecated", "retired", "restored"],
+            "lifecycle events are missing or out of order")
+    require(all(event["metadata"]["from"] and event["metadata"]["to"]
+                and event["metadata"]["reason"] for event in lifecycle_events),
+            "lifecycle event metadata is incomplete")
 
     api.stop()
     api.start()
     persisted = api.request("GET", "/api/v1/components/legacy-api")
     require(persisted["state"] == "active" and len(persisted["lifecycle"]) == 3,
             "lifecycle state or history was not durable")
+    persisted_env = api.request("GET", "/api/v1/environments/existing")
+    require(persisted_env["revision"] == 2
+            and persisted_env["resolved"]["legacy-api"] == "1.0.0",
+            "the environment retaining a formerly retired component was not durable")
+    require(api.request("GET", f"/api/v1/plans/{plan['id']}")["state"] == "applied",
+            "the lifecycle-invalidated plan lost its applied history")
 
 
 def resolve(api):
