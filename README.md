@@ -51,6 +51,29 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 兼容性清单交接
+
+已确认的兼容集合可以导出为可传递清单，交给另一个服务实例核验：
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/environments/staging/manifest > manifest.json
+curl -s http://127.0.0.1:8093/api/v1/manifests/verify -H 'Content-Type: application/json' -d @manifest.json
+```
+
+清单包含格式版本、来源、根依赖、解析集合、所引用版本的依赖定义及内容摘要。ready 或 applied 方案可通过 `GET /api/v1/plans/{id}/manifest` 同样导出；draft 或 cancelled 方案没有已确认集合，返回 409。清单本身不持久化，生成与核验都只读取状态快照，不修改环境或目录。
+
+核验响应的 `valid` 给出总结论，`digest_match` 与 `releases_checked` 给出过程信息，`issues` 逐项列出具体不一致：
+
+- `content_corrupted`：内容与摘要不符，清单在生成后被改动或损坏；
+- `invalid_manifest`：清单结构不完整，例如缺少解析集合所引用版本的依赖定义；
+- `missing_release`：本实例缺少清单引用的组件或版本；
+- `requires_mismatch`：版本存在，但其依赖定义与清单不一致；
+- `unsupported_format`：清单格式版本不受本实例支持。
+
+清单中的 `catalog_revision` 仅记录生成方当时的目录修订号。两个实例各自维护目录，修订号可能不同，核验不比较修订号，只比对清单内容与本地目录的实际定义。内容摘要（SHA-256）只用于发现内容损坏：任何人都能对改动后的内容重新计算摘要，因此它不是签名，不能用来确认清单来源或完整性之外的任何属性。
+
+摘要的规范输入是一个 JSON 对象，字段顺序固定为 `format`、`source`、`source_id`、`catalog_revision`、`roots`、`resolved`、`releases`；映射键按字典序排列，`releases` 按 `(component_id, version)` 排序，使用 UTF-8、不做 HTML 转义、不含空白。摘要值为 `"sha256:"` 加 64 位小写十六进制。任何能复现该字节序列的工具都可以独立核对摘要。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,11 +85,14 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| GET /environments/{id}/manifest | 导出环境当前兼容集合的可传递清单 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
+| GET /plans/{id}/manifest | 导出 ready 或 applied 方案的清单 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
+| POST /manifests/verify | 核验提交的清单并报告具体不一致项 |
 | GET /events | 按序号增量读取变更事件 |
 
 集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
@@ -78,7 +104,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
 - 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
-- JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
+- JSON 请求上限 64 KiB（清单核验为 1 MiB），拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
 - 400 表示输入错误；404 表示对象不存在；409 表示状态或修订号冲突；413 表示请求过大；415 表示媒体类型错误；422 表示无解或预算耗尽；503 表示繁忙。内部持久化错误返回 500，不暴露磁盘路径。
 
@@ -94,9 +120,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py manifest
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消，以及清单生成、跨实例核验、内容篡改与目录修订号差异。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
@@ -107,6 +134,7 @@ python3 checks/workflow.py upgrade
 - `internal/domain`：实体、校验及状态规则。
 - `internal/repository`：状态副本、持久化、独占锁和启动校验。
 - `internal/resolution`：回溯求解、约束证据及版本差异。
+- `internal/manifest`：兼容性清单的生成、规范摘要与核验比较。
 - `internal/service`：组件、环境、方案与事件流程。
 - `internal/httpapi`：HTTP 路由、请求边界及响应。
 - `internal/config`：环境配置。

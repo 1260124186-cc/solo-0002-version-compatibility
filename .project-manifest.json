@@ -24,6 +24,11 @@
       "responsibility": "依赖求解"
     },
     {
+      "id": "manifest",
+      "path": "internal/manifest",
+      "responsibility": "兼容性清单生成与核验"
+    },
+    {
       "id": "service",
       "path": "internal/service",
       "responsibility": "工作流编排"
@@ -103,6 +108,26 @@
         "httpapi",
         "service",
         "resolution",
+        "repository"
+      ]
+    },
+    {
+      "id": "manifest",
+      "name": "兼容性清单交接",
+      "entry": "POST /api/v1/manifests/verify",
+      "steps": [
+        "从环境或 ready 方案生成清单",
+        "另一实例提交清单核验",
+        "报告内容损坏、缺失版本与依赖定义不一致"
+      ],
+      "success": "兼容实例核验通过且不受目录修订号差异影响",
+      "failure": "内容篡改或目录不一致返回具体分类问题",
+      "verification": "真实 HTTP 跨实例生成、核验清单并检查篡改路径",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "manifest",
+        "domain",
         "repository"
       ]
     }

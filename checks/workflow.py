@@ -2,6 +2,7 @@
 """Bounded operational smoke checks through the running HTTP service."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -165,15 +166,129 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def manifest_digest(m):
+    """Recompute the documented canonical digest outside the Go service."""
+    content = {
+        "format": m["format"],
+        "source": m["source"],
+        "source_id": m["source_id"],
+        "catalog_revision": m["catalog_revision"],
+        "roots": {key: m["roots"][key] for key in sorted(m["roots"])},
+        "resolved": {key: m["resolved"][key] for key in sorted(m["resolved"])},
+        "releases": [
+            {"component_id": r["component_id"], "version": r["version"],
+             "requires": {key: r["requires"][key] for key in sorted(r["requires"])}}
+            for r in sorted(m["releases"], key=lambda r: (r["component_id"], r["version"]))
+        ],
+    }
+    data = json.dumps(content, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def start_peer(directory, name):
+    path = Path(directory) / name
+    path.mkdir()
+    peer = RunningService(path)
+    peer.start()
+    return peer
+
+
+def manifest(api):
+    for name in ("atlas-core", "render-engine", "panel-shell"):
+        component(api, name)
+    release(api, "atlas-core", "1.0.0")
+    release(api, "atlas-core", "2.0.0")
+    release(api, "render-engine", "2.0.0", {"atlas-core": ">=2.0.0 <3.0.0"})
+    release(api, "panel-shell", "1.0.0", {"render-engine": "^2.0.0"})
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "handoff", "name": "交付环境", "roots": {"panel-shell": "1.0.0"}}, 201)
+    require(env["resolved"] == {"panel-shell": "1.0.0", "render-engine": "2.0.0", "atlas-core": "2.0.0"},
+            "initial environment resolution failed")
+    latest = api.request("GET", "/api/v1/events")["latest"]
+
+    m = api.request("GET", "/api/v1/environments/handoff/manifest")
+    require(m["format"] == 1 and m["source"] == "environment" and m["source_id"] == "handoff",
+            "manifest identity is wrong")
+    require(m["roots"] == {"panel-shell": "1.0.0"}, "manifest roots are wrong")
+    require(m["resolved"]["atlas-core"] == "2.0.0", "manifest resolved set is wrong")
+    ids = [r["component_id"] for r in m["releases"]]
+    require(ids == sorted(ids) and len(ids) == 3, "manifest releases are not canonical")
+    requires = {r["component_id"]: r["requires"] for r in m["releases"]}
+    require(requires["render-engine"] == {"atlas-core": ">=2.0.0 <3.0.0"}, "manifest lost a dependency definition")
+    require(m["digest"] == manifest_digest(m), "digest is not reproducible from the documented canonical form")
+
+    report = api.request("POST", "/api/v1/manifests/verify", m)
+    require(report["valid"] and report["digest_match"] and report["releases_checked"] == 3
+            and report["issues"] == [], "self verification failed")
+    require(api.request("GET", "/api/v1/environments/handoff")["revision"] == 1,
+            "manifest flow mutated the environment")
+    require(api.request("GET", "/api/v1/events")["latest"] == latest, "manifest flow recorded events")
+
+    plan = api.request("POST", "/api/v1/plans", {"environment_id": "handoff", "base_revision": 1,
+                                                 "roots": {"render-engine": "2.0.0"}, "reason": "移除面板"}, 201)
+    api.request("GET", f"/api/v1/plans/{plan['id']}/manifest", expected=409)
+    api.request("POST", f"/api/v1/plans/{plan['id']}/validate", {"revision": 1})
+    pm = api.request("GET", f"/api/v1/plans/{plan['id']}/manifest")
+    require(pm["source"] == "plan" and pm["resolved"] == {"render-engine": "2.0.0", "atlas-core": "2.0.0"},
+            "plan manifest is wrong")
+    require(api.request("POST", "/api/v1/manifests/verify", pm)["valid"], "plan manifest did not verify")
+    api.request("GET", "/api/v1/environments/unknown/manifest", expected=404)
+
+    tampered = dict(m, resolved={**m["resolved"], "atlas-core": "1.0.0"})
+    report = api.request("POST", "/api/v1/manifests/verify", tampered)
+    require(not report["valid"] and not report["digest_match"], "tampering was not detected")
+    require([i["kind"] for i in report["issues"]] == ["content_corrupted"], "tampering misreported")
+
+    broken = dict(m, releases=m["releases"][:-1])
+    broken["digest"] = manifest_digest(broken)
+    report = api.request("POST", "/api/v1/manifests/verify", broken)
+    require(report["digest_match"] and [i["kind"] for i in report["issues"]] == ["invalid_manifest"],
+            "structural damage misreported")
+    require("render-engine" in report["issues"][0]["detail"], "structural issue is not specific")
+
+    report = api.request("POST", "/api/v1/manifests/verify", dict(m, format=2))
+    require([i["kind"] for i in report["issues"]] == ["unsupported_format"], "unsupported format misreported")
+    api.request("POST", "/api/v1/manifests/verify", dict(m, bogus=1), expected=400)
+
+    peer = start_peer(api.directory, "peer-compatible")
+    try:
+        for name in ("extra-lib", "atlas-core", "render-engine", "panel-shell"):
+            component(peer, name)
+        release(peer, "extra-lib", "1.0.0")
+        release(peer, "atlas-core", "1.0.0")
+        release(peer, "atlas-core", "2.0.0")
+        release(peer, "render-engine", "2.0.0", {"atlas-core": ">=2.0.0 <3.0.0"})
+        release(peer, "panel-shell", "1.0.0", {"render-engine": "^2.0.0"})
+        report = peer.request("POST", "/api/v1/manifests/verify", m)
+        require(report["valid"] and report["releases_checked"] == 3,
+                "compatible peer rejected the manifest: " + json.dumps(report))
+    finally:
+        peer.stop()
+
+    peer = start_peer(api.directory, "peer-divergent")
+    try:
+        component(peer, "atlas-core")
+        component(peer, "render-engine")
+        release(peer, "atlas-core", "2.0.0")
+        release(peer, "render-engine", "2.0.0", {"atlas-core": "~2.0.0"})
+        report = peer.request("POST", "/api/v1/manifests/verify", m)
+        require(not report["valid"] and report["digest_match"], "divergent peer report is wrong")
+        issues = {(i["kind"], i["component_id"]) for i in report["issues"]}
+        require(issues == {("missing_release", "panel-shell"), ("requires_mismatch", "render-engine")},
+                "issues are not specific: " + json.dumps(report))
+    finally:
+        peer.stop()
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "manifest"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "manifest": manifest}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

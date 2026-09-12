@@ -17,16 +17,20 @@ import (
 const maxBodyBytes = 64 << 10
 
 func decode(w http.ResponseWriter, r *http.Request, target any) error {
+	return decodeLimit(w, r, target, maxBodyBytes)
+}
+
+func decodeLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) error {
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" {
 		return &domain.Fault{Code: "unsupported_media", Detail: "Content-Type must be application/json"}
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		var oversized *http.MaxBytesError
 		if errors.As(err, &oversized) {
-			return &domain.Fault{Code: "body_too_large", Detail: "JSON body exceeds 65536 bytes"}
+			return &domain.Fault{Code: "body_too_large", Detail: fmt.Sprintf("JSON body exceeds %d bytes", limit)}
 		}
 		return domain.Invalid("cannot read JSON body")
 	}
