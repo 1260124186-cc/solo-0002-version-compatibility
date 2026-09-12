@@ -16,6 +16,10 @@
       "command": "python3 checks/workflow.py resolve"
     },
     {
+      "workflow_id": "channels",
+      "command": "python3 checks/workflow.py channels"
+    },
+    {
       "workflow_id": "upgrade",
       "command": "python3 checks/workflow.py upgrade"
     }

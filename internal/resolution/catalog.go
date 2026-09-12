@@ -11,6 +11,7 @@ import (
 type candidate struct {
 	release      domain.Release
 	version      semver.Version
+	channel      string
 	dependencies map[string]semver.Constraint
 }
 
@@ -43,7 +44,11 @@ func compile(ctx context.Context, c domain.Catalog) (map[string][]candidate, err
 				}
 				dependencies[dep] = constraint
 			}
-			result[id] = append(result[id], candidate{release: release, version: version, dependencies: dependencies})
+			channel := release.Channel
+			if channel == "" {
+				channel = domain.ChannelStable
+			}
+			result[id] = append(result[id], candidate{release: release, version: version, channel: channel, dependencies: dependencies})
 		}
 		sort.Slice(result[id], func(i, j int) bool {
 			return result[id][i].version.Compare(result[id][j].version) > 0
@@ -59,4 +64,47 @@ func matchesAll(version semver.Version, needs []requirement) bool {
 		}
 	}
 	return true
+}
+
+// withinChannel restricts candidates to the preferred channel and reports
+// whether any candidate was dropped. Withdrawn releases were already removed
+// by compile, so lifecycle state always takes precedence over channel.
+func withinChannel(catalog map[string][]candidate, channel string) (map[string][]candidate, bool) {
+	result := make(map[string][]candidate, len(catalog))
+	dropped := false
+	for _, id := range domain.SortedKeys(catalog) {
+		kept := make([]candidate, 0, len(catalog[id]))
+		for _, choice := range catalog[id] {
+			if choice.channel == channel {
+				kept = append(kept, choice)
+			} else {
+				dropped = true
+			}
+		}
+		result[id] = kept
+	}
+	return result, dropped
+}
+
+// preferChannel keeps every candidate but tries preferred-channel versions
+// first. Each group stays in descending version order, so the fallback search
+// remains deterministic.
+func preferChannel(catalog map[string][]candidate, channel string) map[string][]candidate {
+	result := make(map[string][]candidate, len(catalog))
+	for _, id := range domain.SortedKeys(catalog) {
+		choices := catalog[id]
+		ordered := make([]candidate, 0, len(choices))
+		for _, choice := range choices {
+			if choice.channel == channel {
+				ordered = append(ordered, choice)
+			}
+		}
+		for _, choice := range choices {
+			if choice.channel != channel {
+				ordered = append(ordered, choice)
+			}
+		}
+		result[id] = ordered
+	}
+	return result
 }

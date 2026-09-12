@@ -111,7 +111,7 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 	if err := checkEnvironment(env, plan.BaseRevision); err != nil {
 		return plan, err
 	}
-	result, err := s.solver.Resolve(ctx, state.Catalog, plan.Roots)
+	result, err := s.solver.Resolve(ctx, state.Catalog, plan.Roots, env.Channel)
 	if err != nil {
 		return plan, err
 	}

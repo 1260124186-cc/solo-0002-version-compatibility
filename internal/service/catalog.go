@@ -58,8 +58,12 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 	if err := domain.ValidateRelease(input, id); err != nil {
 		return domain.Release{}, err
 	}
-	release := domain.Release{ComponentID: id, Version: input.Version, Requires: domain.CopyStrings(input.Requires), State: domain.Available, CreatedAt: now()}
-	err := s.repo.Update(ctx, func(state *repository.State) error {
+	channel, err := domain.NormalizeChannel(input.Channel)
+	if err != nil {
+		return domain.Release{}, err
+	}
+	release := domain.Release{ComponentID: id, Version: input.Version, Channel: channel, Requires: domain.CopyStrings(input.Requires), State: domain.Available, CreatedAt: now()}
+	err = s.repo.Update(ctx, func(state *repository.State) error {
 		if _, exists := state.Catalog.Components[id]; !exists {
 			return domain.Missing("component", id)
 		}
@@ -83,7 +87,14 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 	return release, err
 }
 
-func (s *Service) ListReleases(ctx context.Context, id string) ([]domain.Release, error) {
+func (s *Service) ListReleases(ctx context.Context, id, channel string) ([]domain.Release, error) {
+	if channel != "" {
+		normalized, err := domain.NormalizeChannel(channel)
+		if err != nil {
+			return nil, err
+		}
+		channel = normalized
+	}
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -93,6 +104,9 @@ func (s *Service) ListReleases(ctx context.Context, id string) ([]domain.Release
 	}
 	items := make([]domain.Release, 0, len(state.Catalog.Releases[id]))
 	for _, release := range state.Catalog.Releases[id] {
+		if channel != "" && release.Channel != channel {
+			continue
+		}
 		items = append(items, release)
 	}
 	sort.Slice(items, func(i, j int) bool {

@@ -14,6 +14,10 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 	if err := domain.ValidateText(input.Name, "name", 1, 120); err != nil {
 		return domain.Environment{}, err
 	}
+	channel, err := domain.NormalizeChannel(input.Channel)
+	if err != nil {
+		return domain.Environment{}, err
+	}
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
 		return domain.Environment{}, err
@@ -21,12 +25,12 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 	if _, exists := state.Environments[input.ID]; exists {
 		return domain.Environment{}, domain.Conflict("environment already exists")
 	}
-	resolved, err := s.solver.Resolve(ctx, state.Catalog, input.Roots)
+	resolved, err := s.solver.Resolve(ctx, state.Catalog, input.Roots, channel)
 	if err != nil {
 		return domain.Environment{}, err
 	}
 	at := now()
-	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CreatedAt: at, UpdatedAt: at}
+	env := domain.Environment{ID: input.ID, Name: input.Name, Channel: channel, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		if err := checkCatalog(resolved.CatalogRevision, current); err != nil {
 			return err

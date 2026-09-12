@@ -50,6 +50,25 @@ func (s *State) Clone() (*State, error) {
 	return &result, nil
 }
 
+// normalizeChannels upgrades states written before channels existed: an
+// omitted channel means stable. Keeps schema 1 readable without migration.
+func normalizeChannels(s *State) {
+	for _, releases := range s.Catalog.Releases {
+		for version, release := range releases {
+			if release.Channel == "" {
+				release.Channel = domain.ChannelStable
+				releases[version] = release
+			}
+		}
+	}
+	for id, env := range s.Environments {
+		if env.Channel == "" {
+			env.Channel = domain.ChannelStable
+			s.Environments[id] = env
+		}
+	}
+}
+
 func (s *State) Record(kind, id, action string, at time.Time) {
 	s.Revision++
 	s.Events = append(s.Events, Event{

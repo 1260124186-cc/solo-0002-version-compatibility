@@ -45,6 +45,9 @@ func validateState(s *State) error {
 			if release.State != domain.Available && release.State != domain.Withdrawn {
 				return fmt.Errorf("invalid release state")
 			}
+			if release.Channel != domain.ChannelStable && release.Channel != domain.ChannelPreview {
+				return fmt.Errorf("invalid release channel")
+			}
 			if (release.State == domain.Withdrawn) != (release.WithdrawnAt != nil) {
 				return fmt.Errorf("invalid withdrawal timestamp")
 			}
@@ -64,6 +67,9 @@ func validateState(s *State) error {
 		}
 		if err := domain.ValidateText(env.Name, "name", 1, 120); err != nil {
 			return err
+		}
+		if env.Channel != domain.ChannelStable && env.Channel != domain.ChannelPreview {
+			return fmt.Errorf("invalid environment channel")
 		}
 		if err := ValidateSelection(s.Catalog, env.Roots, env.Resolved, true); err != nil {
 			return err

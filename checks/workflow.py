@@ -86,9 +86,11 @@ def component(api, name):
     return api.request("POST", "/api/v1/components", {"id": name, "name": name, "description": ""}, 201)
 
 
-def release(api, name, version, requires=None, expected=201):
-    return api.request("POST", f"/api/v1/components/{name}/releases",
-                       {"version": version, "requires": requires or {}}, expected)
+def release(api, name, version, requires=None, expected=201, channel=None):
+    body = {"version": version, "requires": requires or {}}
+    if channel is not None:
+        body["channel"] = channel
+    return api.request("POST", f"/api/v1/components/{name}/releases", body, expected)
 
 
 def populate(api):
@@ -137,6 +139,45 @@ def resolve(api):
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
 
 
+def channels(api):
+    component(api, "core-lib")
+    release(api, "core-lib", "1.0.0")
+    release(api, "core-lib", "2.0.0", channel="preview")
+    release(api, "core-lib", "3.0.0", channel="beta", expected=400)
+    component(api, "web-ui")
+    release(api, "web-ui", "1.0.0", {"core-lib": "^1.0.0"})
+    release(api, "web-ui", "2.0.0", {"core-lib": "~1.0.0"}, channel="preview")
+    items = api.request("GET", "/api/v1/components/core-lib/releases")["items"]
+    require([item["channel"] for item in items] == ["preview", "stable"], "release channel not stored and exported")
+    preview = api.request("GET", "/api/v1/components/core-lib/releases?channel=preview")["items"]
+    require(len(preview) == 1 and preview[0]["version"] == "2.0.0", "release channel filter failed")
+    api.request("GET", "/api/v1/components/core-lib/releases?channel=beta", expected=400)
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"core-lib": "*"}})
+    require(result["resolved"]["core-lib"] == "1.0.0" and result["channel"] == "stable"
+            and not result["channel_fallback"], "default stable preference not applied")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"core-lib": "*"}, "channel": "preview"})
+    require(result["resolved"]["core-lib"] == "2.0.0" and result["channels"]["core-lib"] == "preview",
+            "preview preference not applied")
+    api.request("POST", "/api/v1/resolve", {"roots": {"core-lib": "*"}, "channel": "beta"}, 400)
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"web-ui": "*"}, "channel": "preview"})
+    require(result["resolved"] == {"web-ui": "2.0.0", "core-lib": "1.0.0"} and result["channel_fallback"],
+            "fallback out of the preview channel failed")
+    require(result["channels"] == {"web-ui": "preview", "core-lib": "stable"}, "selected channels not exported")
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "preview-lab", "name": "预览环境", "channel": "preview", "roots": {"web-ui": "*"}}, 201)
+    require(env["channel"] == "preview" and env["resolved"]["web-ui"] == "2.0.0",
+            "environment channel preference not honoured")
+    api.request("POST", "/api/v1/components/core-lib/releases/2.0.0/withdraw", {})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"core-lib": "*"}, "channel": "preview"})
+    require(result["resolved"]["core-lib"] == "1.0.0" and result["channel_fallback"],
+            "withdrawn release escaped state filtering")
+    api.stop()
+    api.start()
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"web-ui": "*"}, "channel": "preview"})
+    require(result["resolved"] == {"web-ui": "2.0.0", "core-lib": "1.0.0"} and result["channel_fallback"],
+            "channel state lost after restart")
+
+
 def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
@@ -167,13 +208,13 @@ def upgrade(api):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "channels", "upgrade"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "channels": channels, "upgrade": upgrade}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

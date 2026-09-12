@@ -35,6 +35,19 @@ func ValidateText(value, field string, minimum, maximum int) error {
 	return nil
 }
 
+// NormalizeChannel maps an omitted channel to the stable default and rejects
+// unknown channels. Channels are selection metadata only; they never relax
+// the stable three-part version rule.
+func NormalizeChannel(raw string) (string, error) {
+	switch raw {
+	case "", ChannelStable:
+		return ChannelStable, nil
+	case ChannelPreview:
+		return ChannelPreview, nil
+	}
+	return "", Invalid("channel must be %q or %q", ChannelStable, ChannelPreview)
+}
+
 func ValidateRequirements(requirements map[string]string, allowEmpty bool) error {
 	if len(requirements) > MaxDependencies || (!allowEmpty && len(requirements) == 0) {
 		return Invalid("requirements must contain %d–%d entries", boolMinimum(allowEmpty), MaxDependencies)
@@ -87,6 +100,9 @@ func ValidateComponent(input ComponentInput) error {
 func ValidateRelease(input ReleaseInput, componentID string) error {
 	if _, err := semver.Parse(input.Version); err != nil {
 		return Invalid("%s", err)
+	}
+	if _, err := NormalizeChannel(input.Channel); err != nil {
+		return err
 	}
 	if err := ValidateRequirements(input.Requires, true); err != nil {
 		return err

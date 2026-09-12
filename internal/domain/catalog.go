@@ -12,6 +12,7 @@ type Component struct {
 type Release struct {
 	ComponentID string            `json:"component_id"`
 	Version     string            `json:"version"`
+	Channel     string            `json:"channel"`
 	Requires    map[string]string `json:"requires"`
 	State       string            `json:"state"`
 	CreatedAt   time.Time         `json:"created_at"`
@@ -26,6 +27,7 @@ type ComponentInput struct {
 
 type ReleaseInput struct {
 	Version  string            `json:"version"`
+	Channel  string            `json:"channel"`
 	Requires map[string]string `json:"requires"`
 }
 
@@ -38,6 +40,8 @@ type Catalog struct {
 const (
 	Available       = "available"
 	Withdrawn       = "withdrawn"
+	ChannelStable   = "stable"
+	ChannelPreview  = "preview"
 	MaxComponents   = 500
 	MaxReleases     = 200
 	MaxDependencies = 32

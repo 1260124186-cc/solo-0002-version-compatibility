@@ -23,8 +23,12 @@ type search struct {
 	conflicts []string
 }
 
-func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
+func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string, channel string) (domain.Resolution, error) {
 	if err := domain.ValidateRequirements(roots, false); err != nil {
+		return domain.Resolution{}, err
+	}
+	preferred, err := domain.NormalizeChannel(channel)
+	if err != nil {
 		return domain.Resolution{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -40,7 +44,7 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 	if s.MaxNodes <= 0 {
 		s.MaxNodes = 128
 	}
-	work := search{ctx: ctx, catalog: compiled, roots: make(map[string]semver.Constraint), maxSteps: s.MaxSteps, maxNodes: s.MaxNodes}
+	work := search{ctx: ctx, roots: make(map[string]semver.Constraint), maxSteps: s.MaxSteps, maxNodes: s.MaxNodes}
 	for _, id := range domain.SortedKeys(roots) {
 		if _, exists := catalog.Components[id]; !exists {
 			return domain.Resolution{}, domain.Missing("component", id)
@@ -51,17 +55,34 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		}
 		work.roots[id] = constraint
 	}
+	// Phase 1: solve strictly inside the preferred channel. Phase 2 (only
+	// when phase 1 has no solution and the channel actually excluded
+	// candidates): retry over every available release, still trying
+	// preferred-channel versions first. Both phases share one step budget.
+	narrowed, dropped := withinChannel(compiled, preferred)
+	work.catalog = narrowed
 	selected, err := work.solve(make(map[string]candidate))
 	if err != nil {
 		return domain.Resolution{}, err
 	}
+	fallback := false
+	if selected == nil && dropped {
+		work.conflicts = nil
+		work.catalog = preferChannel(compiled, preferred)
+		selected, err = work.solve(make(map[string]candidate))
+		if err != nil {
+			return domain.Resolution{}, err
+		}
+		fallback = selected != nil
+	}
 	if selected == nil {
 		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints", Conflicts: work.conflicts}
 	}
-	result := domain.Resolution{CatalogRevision: catalog.Revision, Resolved: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
+	result := domain.Resolution{CatalogRevision: catalog.Revision, Channel: preferred, ChannelFallback: fallback, Resolved: make(map[string]string), Channels: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
 	for _, id := range domain.SortedKeys(selected) {
 		chosen := selected[id]
 		result.Resolved[id] = chosen.release.Version
+		result.Channels[id] = chosen.channel
 		for _, dep := range domain.SortedKeys(chosen.dependencies) {
 			result.Edges = append(result.Edges, domain.Edge{From: id, To: dep, Constraint: chosen.dependencies[dep].Raw})
 		}

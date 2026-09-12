@@ -5,6 +5,7 @@ import "time"
 type Environment struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
+	Channel   string            `json:"channel"`
 	Roots     map[string]string `json:"roots"`
 	Resolved  map[string]string `json:"resolved"`
 	Revision  uint64            `json:"revision"`
@@ -13,13 +14,15 @@ type Environment struct {
 }
 
 type EnvironmentInput struct {
-	ID    string            `json:"id"`
-	Name  string            `json:"name"`
-	Roots map[string]string `json:"roots"`
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Channel string            `json:"channel"`
+	Roots   map[string]string `json:"roots"`
 }
 
 type ResolutionInput struct {
-	Roots map[string]string `json:"roots"`
+	Channel string            `json:"channel"`
+	Roots   map[string]string `json:"roots"`
 }
 
 type Edge struct {
@@ -30,7 +33,10 @@ type Edge struct {
 
 type Resolution struct {
 	CatalogRevision uint64            `json:"catalog_revision"`
+	Channel         string            `json:"channel"`
+	ChannelFallback bool              `json:"channel_fallback"`
 	Resolved        map[string]string `json:"resolved"`
+	Channels        map[string]string `json:"channels"`
 	Edges           []Edge            `json:"edges"`
 	Steps           int               `json:"steps"`
 }

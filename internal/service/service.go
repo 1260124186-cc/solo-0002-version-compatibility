@@ -35,7 +35,7 @@ func (s *Service) Resolve(ctx context.Context, input domain.ResolutionInput) (do
 	if err != nil {
 		return domain.Resolution{}, err
 	}
-	return s.solver.Resolve(ctx, snapshot.Catalog, input.Roots)
+	return s.solver.Resolve(ctx, snapshot.Catalog, input.Roots, input.Channel)
 }
 
 func checkCatalog(revision uint64, state *repository.State) error {

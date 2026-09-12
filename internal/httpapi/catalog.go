@@ -65,7 +65,7 @@ func (a *API) addRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) releases(w http.ResponseWriter, r *http.Request) {
-	if err := queryOnly(r, "offset", "limit"); err != nil {
+	if err := queryOnly(r, "offset", "limit", "channel"); err != nil {
 		fail(w, err)
 		return
 	}
@@ -74,7 +74,7 @@ func (a *API) releases(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	items, err := a.service.ListReleases(r.Context(), r.PathValue("id"))
+	items, err := a.service.ListReleases(r.Context(), r.PathValue("id"), r.URL.Query().Get("channel"))
 	if err != nil {
 		fail(w, err)
 		return
