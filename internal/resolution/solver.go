@@ -14,13 +14,15 @@ type Solver struct {
 }
 
 type search struct {
-	ctx       context.Context
-	catalog   map[string][]candidate
-	roots     map[string]semver.Constraint
-	steps     int
-	maxSteps  int
-	maxNodes  int
-	conflicts []string
+	ctx        context.Context
+	catalog    map[string][]candidate
+	components map[string]domain.Component
+	roots      map[string]semver.Constraint
+	steps      int
+	maxSteps   int
+	maxNodes   int
+	conflicts  []string
+	visibility []string
 }
 
 func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
@@ -40,14 +42,18 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 	if s.MaxNodes <= 0 {
 		s.MaxNodes = 128
 	}
-	work := search{ctx: ctx, catalog: compiled, roots: make(map[string]semver.Constraint), maxSteps: s.MaxSteps, maxNodes: s.MaxNodes}
+	work := search{ctx: ctx, catalog: compiled, components: catalog.Components, roots: make(map[string]semver.Constraint), maxSteps: s.MaxSteps, maxNodes: s.MaxNodes}
 	for _, id := range domain.SortedKeys(roots) {
-		if _, exists := catalog.Components[id]; !exists {
+		component, exists := catalog.Components[id]
+		if !exists {
 			return domain.Resolution{}, domain.Missing("component", id)
 		}
 		constraint, err := semver.ParseConstraint(roots[id])
 		if err != nil {
 			return domain.Resolution{}, err
+		}
+		if !domain.CanReference("", domain.Component{}, component) {
+			return domain.Resolution{}, domain.VisibilityDenied("root requests cannot depend directly on internal component %s; use its public family entry point", id)
 		}
 		work.roots[id] = constraint
 	}
@@ -56,6 +62,9 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		return domain.Resolution{}, err
 	}
 	if selected == nil {
+		if len(work.visibility) > 0 {
+			return domain.Resolution{}, &domain.Fault{Code: "visibility_denied", Detail: "no selectable release respects the internal dependency boundaries", Conflicts: work.visibility}
+		}
 		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints", Conflicts: work.conflicts}
 	}
 	result := domain.Resolution{CatalogRevision: catalog.Revision, Resolved: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
@@ -99,6 +108,10 @@ func (s *search) solve(selected map[string]candidate) (map[string]candidate, err
 		if !matchesAll(choice.version, needs[unresolved]) {
 			continue
 		}
+		if len(choice.blocked) > 0 {
+			s.explainVisibility(unresolved, choice.release.Version, choice.blocked)
+			continue
+		}
 		next := make(map[string]candidate, len(selected)+1)
 		for id, value := range selected {
 			next[id] = value
@@ -114,6 +127,29 @@ func (s *search) solve(selected map[string]candidate) (map[string]candidate, err
 	}
 	s.explain(unresolved, needs[unresolved])
 	return nil, nil
+}
+
+func (s *search) explainVisibility(from, version string, blocked map[string]bool) {
+	if len(s.visibility) >= 8 {
+		return
+	}
+	for _, dep := range domain.SortedKeys(blocked) {
+		target := s.components[dep]
+		item := fmt.Sprintf("%s@%s directly depends on internal %s (family %q) without family membership or an allowed-consumer grant", from, version, dep, target.Family)
+		found := false
+		for _, existing := range s.visibility {
+			if existing == item {
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.visibility = append(s.visibility, item)
+		}
+		if len(s.visibility) >= 8 {
+			return
+		}
+	}
 }
 
 func (s *search) requirements(selected map[string]candidate) map[string][]requirement {

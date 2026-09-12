@@ -26,7 +26,8 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 		return domain.Environment{}, err
 	}
 	at := now()
-	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CreatedAt: at, UpdatedAt: at}
+	visibilityRevision := state.Catalog.VisibilityRevision
+	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CatalogRevision: resolved.CatalogRevision, VisibilityRevision: &visibilityRevision, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		if err := checkCatalog(resolved.CatalogRevision, current); err != nil {
 			return err

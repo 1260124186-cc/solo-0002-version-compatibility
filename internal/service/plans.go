@@ -135,6 +135,8 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		latest.Resolved = result.Resolved
 		latest.Changes = changes
 		latest.CatalogRevision = result.CatalogRevision
+		visibilityRevision := current.Catalog.VisibilityRevision
+		latest.VisibilityRevision = &visibilityRevision
 		latest.Revision++
 		latest.UpdatedAt = now()
 		current.Plans[id] = latest

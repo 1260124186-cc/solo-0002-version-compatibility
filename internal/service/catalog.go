@@ -13,7 +13,12 @@ func (s *Service) CreateComponent(ctx context.Context, input domain.ComponentInp
 	if err := domain.ValidateComponent(input); err != nil {
 		return domain.Component{}, err
 	}
-	component := domain.Component{ID: input.ID, Name: input.Name, Description: input.Description, CreatedAt: now()}
+	visibility := input.Visibility
+	if visibility == "" {
+		visibility = domain.Public
+	}
+	allowed := append([]string(nil), input.AllowedConsumers...)
+	component := domain.Component{ID: input.ID, Name: input.Name, Description: input.Description, Family: input.Family, Visibility: visibility, AllowedConsumers: allowed, CreatedAt: now()}
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		if _, exists := state.Catalog.Components[input.ID]; exists {
 			return domain.Conflict("component %s already exists", input.ID)
@@ -21,9 +26,17 @@ func (s *Service) CreateComponent(ctx context.Context, input domain.ComponentInp
 		if len(state.Catalog.Components) >= domain.MaxComponents {
 			return domain.Limit("component capacity reached")
 		}
+		for _, consumer := range component.AllowedConsumers {
+			if _, exists := state.Catalog.Components[consumer]; !exists {
+				return domain.Missing("allowed consumer component", consumer)
+			}
+		}
 		state.Catalog.Components[input.ID] = component
 		state.Catalog.Releases[input.ID] = make(map[string]domain.Release)
 		state.Catalog.Revision++
+		if component.Visibility == domain.Internal {
+			state.Catalog.VisibilityRevision++
+		}
 		state.Record("component", input.ID, "created", component.CreatedAt)
 		return nil
 	})
@@ -58,7 +71,8 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 	if err := domain.ValidateRelease(input, id); err != nil {
 		return domain.Release{}, err
 	}
-	release := domain.Release{ComponentID: id, Version: input.Version, Requires: domain.CopyStrings(input.Requires), State: domain.Available, CreatedAt: now()}
+	constraints := domain.RequirementConstraints(input.Requires)
+	release := domain.Release{ComponentID: id, Version: input.Version, Requires: constraints, State: domain.Available, CreatedAt: now()}
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		if _, exists := state.Catalog.Components[id]; !exists {
 			return domain.Missing("component", id)
@@ -70,11 +84,24 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 		if len(releases) >= domain.MaxReleases {
 			return domain.Limit("release capacity reached for this component")
 		}
+		owner := state.Catalog.Components[id]
 		for _, dep := range domain.SortedKeys(input.Requires) {
-			if _, exists := state.Catalog.Components[dep]; !exists {
+			target, exists := state.Catalog.Components[dep]
+			if !exists {
 				return domain.Missing("dependency component", dep)
 			}
+			requirement := input.Requires[dep]
+			if requirement.IsInternal() && domain.EffectiveVisibility(target) != domain.Internal {
+				return domain.Invalid("edge to %s is declared internal but that component is public", dep)
+			}
+			if requirement.IsInternal() && owner.Family == "" {
+				return domain.Invalid("component %s cannot declare internal edges without a family", id)
+			}
+			if !domain.CanReference(id, owner, target) {
+				return domain.VisibilityDenied("%s is internal to family %q; %s is neither in the family nor on its allowed consumer list", dep, target.Family, id)
+			}
 		}
+		release.InternalDeps = domain.InternalDependencyIDs(input.Requires)
 		releases[input.Version] = release
 		state.Catalog.Revision++
 		state.Record("release", id+"@"+input.Version, "added", release.CreatedAt)

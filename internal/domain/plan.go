@@ -17,18 +17,19 @@ type Change struct {
 }
 
 type Plan struct {
-	ID              string            `json:"id"`
-	EnvironmentID   string            `json:"environment_id"`
-	BaseRevision    uint64            `json:"base_revision"`
-	Revision        uint64            `json:"revision"`
-	CatalogRevision uint64            `json:"catalog_revision"`
-	Roots           map[string]string `json:"roots"`
-	Resolved        map[string]string `json:"resolved"`
-	Changes         []Change          `json:"changes"`
-	State           string            `json:"state"`
-	Reason          string            `json:"reason"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	ID                 string            `json:"id"`
+	EnvironmentID      string            `json:"environment_id"`
+	BaseRevision       uint64            `json:"base_revision"`
+	Revision           uint64            `json:"revision"`
+	CatalogRevision    uint64            `json:"catalog_revision"`
+	VisibilityRevision *uint64           `json:"visibility_revision,omitempty"`
+	Roots              map[string]string `json:"roots"`
+	Resolved           map[string]string `json:"resolved"`
+	Changes            []Change          `json:"changes"`
+	State              string            `json:"state"`
+	Reason             string            `json:"reason"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 type PlanInput struct {

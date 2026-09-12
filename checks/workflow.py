@@ -82,8 +82,9 @@ def require(condition, detail):
         raise RuntimeError(detail)
 
 
-def component(api, name):
-    return api.request("POST", "/api/v1/components", {"id": name, "name": name, "description": ""}, 201)
+def component(api, name, body=None):
+    payload = body or {"id": name, "name": name, "description": ""}
+    return api.request("POST", "/api/v1/components", payload, 201)
 
 
 def release(api, name, version, requires=None, expected=201):
@@ -165,15 +166,112 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def tighten_policy(directory, component_id, allowed_consumers):
+    """Edit the persisted component policy while the server is stopped."""
+    path = Path(directory) / "state" / "state.json"
+    data = json.loads(path.read_text())
+    data["catalog"]["components"][component_id]["allowed_consumers"] = allowed_consumers
+    data["catalog"]["visibility_revision"] = data["catalog"].get("visibility_revision", 0) + 1
+    path.write_text(json.dumps(data))
+
+
+def visibility(api):
+    # Same family: an internal component stays reachable through a public
+    # family entry point and cannot be named directly from a root request.
+    component(api, "core-engine", {"id": "core-engine", "name": "core-engine",
+                                   "family": "core", "visibility": "internal"})
+    component(api, "core-facade", {"id": "core-facade", "name": "core-facade",
+                                   "family": "core"})
+    component(api, "stranger-app")
+    release(api, "core-engine", "1.0.0")
+    release(api, "core-facade", "1.0.0", {"core-engine": "^1.0.0"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"core-facade": "*"}})
+    require(result["resolved"]["core-engine"] == "1.0.0",
+            "internal component must resolve through a same-family entry point")
+    api.request("POST", "/api/v1/resolve", {"roots": {"core-engine": "*"}}, 422)
+    api.request("POST", "/api/v1/components/stranger-app/releases",
+                {"version": "1.0.0", "requires": {"core-engine": "*"}}, 422)
+
+    # An internal component without a family is rejected at registration.
+    api.request("POST", "/api/v1/components",
+                {"id": "bad-internal", "name": "bad", "visibility": "internal"}, 400)
+
+    # Allowed consumer grant via a separately created internal secret. The
+    # granted component must exist before it can appear on the allow list.
+    component(api, "trusted-app")
+    component(api, "secret-store", {"id": "secret-store", "name": "secret-store",
+                                    "family": "secret-team", "visibility": "internal",
+                                    "allowed_consumers": ["trusted-app"]})
+    release(api, "secret-store", "1.0.0")
+    release(api, "trusted-app", "1.0.0", {"secret-store": "*"})
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"trusted-app": "*"}})
+    require(result["resolved"]["secret-store"] == "1.0.0",
+            "component on the allowed consumer list was rejected")
+
+    # Cross-family cycle back edge: registration refuses the illegal edge even
+    # though the internal engine is reachable through the facade.
+    component(api, "partner-bridge", {"id": "partner-bridge", "name": "partner-bridge",
+                                      "family": "partner"})
+    release(api, "core-engine", "2.0.0", {"partner-bridge": "^1.0.0"})
+    release(api, "partner-bridge", "1.0.0", {"core-engine": "^1.0.0"}, expected=422)
+
+    # An engine 2.x release that closes a legal same-family edge forces the
+    # solver to backtrack toward the legal 1.x set through facade 2.0.0.
+    release(api, "core-facade", "2.0.0")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"core-facade": "*"}})
+    require(result["resolved"]["core-facade"] == "2.0.0"
+            and result["resolved"]["core-engine"] == "1.0.0",
+            "solver did not backtrack to a visibility-legal set")
+
+    # Plan validation and application enforce the same boundary.
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "stage", "name": "stage", "roots": {"core-facade": "1.0.0"}}, 201)
+    require(env["resolved"]["core-engine"] == "1.0.0", "environment lost internal selection")
+    illegal = api.request("POST", "/api/v1/plans",
+                          {"environment_id": "stage", "base_revision": 1,
+                           "roots": {"core-engine": "*"}, "reason": "bypass"}, 201)
+    api.request("POST", f"/api/v1/plans/{illegal['id']}/validate", {"revision": 1}, 422)
+    require(api.request("GET", f"/api/v1/plans/{illegal['id']}")["state"] == "draft",
+            "failed validation must keep the plan draft")
+    legal = api.request("POST", "/api/v1/plans",
+                        {"environment_id": "stage", "base_revision": 1,
+                         "roots": {"core-facade": "*"}, "reason": "via facade"}, 201)
+    ready = api.request("POST", f"/api/v1/plans/{legal['id']}/validate", {"revision": 1})
+    require(ready["visibility_revision"] >= 1, "validated plan must record the visibility revision")
+    applied = api.request("POST", f"/api/v1/plans/{legal['id']}/apply",
+                          {"revision": ready["revision"]})
+    require(applied["environment"]["resolved"]["core-engine"] == "1.0.0",
+            "application of an internal selection failed")
+    api.request("POST", "/api/v1/components/core-engine/releases/1.0.0/withdraw", {}, 409)
+
+    # Tighten the secret-store policy while stopped. The historical environment
+    # stays readable and bootable; a new resolution that reaches the now-revoked
+    # consumer grant is rejected at decision time.
+    secret_env = api.request("POST", "/api/v1/environments",
+                             {"id": "secret-stage", "name": "secret-stage",
+                              "roots": {"trusted-app": "1.0.0"}}, 201)
+    require(secret_env["visibility_revision"] >= 1,
+            "environment must record the visibility revision")
+    api.stop()
+    tighten_policy(api.directory, "secret-store", [])
+    api.start()
+    stage = api.request("GET", "/api/v1/environments/secret-stage")
+    require(stage["resolved"]["secret-store"] == "1.0.0",
+            "environment using an internal implementation became unreadable after tightening")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"trusted-app": "*"}}, 422)
+    require(result["error"]["code"] == "visibility_denied",
+            "new resolution must be rejected after the grant is revoked")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "visibility"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "visibility": visibility}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

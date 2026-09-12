@@ -74,7 +74,7 @@ func fail(w http.ResponseWriter, err error) {
 			status = http.StatusNotFound
 		case "conflict":
 			status = http.StatusConflict
-		case "no_solution", "limit_exceeded":
+		case "no_solution", "limit_exceeded", "visibility_denied":
 			status = http.StatusUnprocessableEntity
 		case "unsupported_media":
 			status = http.StatusUnsupportedMediaType
