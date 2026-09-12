@@ -51,12 +51,27 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+### 修改组件名称与说明
+
+组件标识（`id`）与已登记版本内容不可变，但名称和说明可以通过 `PATCH /api/v1/components/{id}` 修改：
+
+```sh
+curl -s -X PATCH http://127.0.0.1:8092/api/v1/components/compute-core \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"计算核心（改名）","description":"新的说明","revision":1}'
+```
+
+- 请求需携带读取组件时得到的 `revision`，服务据此做乐观并发控制。两个调用方基于同一修订号先后提交时，先提交的一方成功（修订号 +1），后提交的一方收到 `409 {"error":{"code":"conflict",...}}`，需重新获取组件后再改。
+- 只改名称、说明属于说明性修改：不递增目录修订号（`catalog_revision` 不变），不影响依赖求解结果，也不会让已经 ready 的升级方案仅因改名失效。
+- 名称、说明与提交时完全相同的请求视为空操作，成功返回但不推进修订号、不产生事件。
+- 每次实际修改都会把组件自身的 `revision` 加一，写入 `updated_at`，并产生一条 `kind=component`、`action=updated` 的事件，可通过 `/api/v1/events?entity_id={id}` 查询。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
 | --- | --- |
 | GET、POST /components | 分页查询、创建组件 |
-| GET /components/{id} | 获取组件详情 |
+| GET、PATCH /components/{id} | 获取组件详情；按修订号修改名称与说明 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
 | POST /resolve | 求解根依赖和传递依赖 |
@@ -86,7 +101,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 服务使用进程独占锁，两个进程不能共享同一数据目录。状态在 `state.json` 中保存，写入临时文件并执行 fsync 后原子替换。替换成功才更新内存；目录 fsync 尽力执行，因此极端断电持久性仍取决于宿主文件系统。数据上限 64 MiB。
 
-启动会校验 schema、引用关系、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制。
+启动会校验 schema、引用关系、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。当前持久化格式为 schema 2：组件带有独立的元数据修订号。旧的 schema 1 数据目录仍可直接打开，启动时就地迁移（旧组件的元数据修订号视为 1），首次写入后落盘为 schema 2。
 
 ## 验证与测试边界
 
@@ -112,4 +127,4 @@ python3 checks/workflow.py upgrade
 - `internal/config`：环境配置。
 - `checks`：公开 HTTP 运行检查。
 
-当前不提供网页界面、第三方组件源接入、多实例共享数据、方案清理接口或预发行版本支持。版本内容不可修改，撤回不可逆；采用新的版本号修订依赖。
+当前不提供网页界面、第三方组件源接入、多实例共享数据、方案清理接口或预发行版本支持。组件标识与版本内容不可修改，撤回不可逆；采用新的版本号修订依赖。组件名称与说明可在乐观并发保护下修改，且不改变求解结果。

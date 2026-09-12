@@ -110,15 +110,50 @@ def catalog(api):
     api.request("POST", "/api/v1/components", expected=400,
                 raw=b'{"id":"ab","id":"cd","name":"duplicate"}')
     api.request("POST", "/api/v1/components", {"id": "ab", "name": "x", "unexpected": 1}, 400)
+
+    # Component metadata edits use an independent per-component revision.
+    catalog_revision_before = api.request("GET", "/api/v1/components")["catalog_revision"]
+    edited = api.request("PATCH", "/api/v1/components/atlas-core",
+                         {"name": "核心组件", "description": "说明文本", "revision": 1})
+    require(edited["name"] == "核心组件" and edited["description"] == "说明文本", "metadata edit not applied")
+    require(edited["revision"] == 2 and edited["id"] == "atlas-core", "metadata revision did not advance")
+    require(api.request("GET", "/api/v1/components")["catalog_revision"] == catalog_revision_before,
+            "descriptive edit must not change the catalog revision")
+    # Two callers basing their edit on the same metadata version: the second
+    # commit loses and must get an explicit conflict.
+    stale = api.request("PATCH", "/api/v1/components/atlas-core",
+                        {"name": "迟到修改", "description": "", "revision": 1}, 409)
+    require(stale["error"]["code"] == "conflict", "stale metadata edit must report a conflict")
+    require(api.request("GET", "/api/v1/components/atlas-core")["name"] == "核心组件",
+            "conflicting edit must leave committed metadata untouched")
+    # Resubmitting unchanged content against the current revision is a no-op.
+    unchanged = api.request("PATCH", "/api/v1/components/atlas-core",
+                            {"name": "核心组件", "description": "说明文本", "revision": 2})
+    require(unchanged["revision"] == 2, "no-op edit must not advance the revision")
+    api.request("PATCH", "/api/v1/components/atlas-core",
+                {"name": "  ", "description": "", "revision": 2}, 400)
+    api.request("PATCH", "/api/v1/components/atlas-core",
+                {"name": "核心组件", "description": "说明文本", "revision": 0}, 400)
+    api.request("PATCH", "/api/v1/components/atlas-core",
+                {"id": "other-core", "name": "核心组件", "description": "", "revision": 2}, 400)
+    api.request("PATCH", "/api/v1/components/missing-core",
+                {"name": "x", "description": "", "revision": 1}, 404)
+
     result = api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {})
     require(result["state"] == "withdrawn", "release did not become withdrawn")
     api.request("POST", "/api/v1/resolve", {"roots": {"atlas-core": "*"}}, 422)
     api.stop()
     api.start()
+    result = api.request("GET", "/api/v1/components/atlas-core")
+    require(result["name"] == "核心组件" and result["revision"] == 2, "component metadata did not survive restart")
     result = api.request("GET", "/api/v1/components/atlas-core/releases")
     require(len(result["items"]) == 1 and result["items"][0]["state"] == "withdrawn", "durable version state changed after restart")
     events = api.request("GET", "/api/v1/events")["items"]
-    require([event["action"] for event in events] == ["created", "added", "withdrawn"], "failed writes altered events")
+    require([event["action"] for event in events] == ["created", "added", "updated", "withdrawn"], "failed writes altered events")
+    traced = api.request("GET", "/api/v1/events?entity_id=atlas-core")["items"]
+    require([event["action"] for event in traced] == ["created", "updated"], "component event trail is not queryable")
+    component_events = [event for event in events if event["kind"] == "component"]
+    require(all(event["entity_id"] == "atlas-core" for event in component_events), "component events target the wrong entity")
 
 
 def resolve(api):
@@ -151,6 +186,10 @@ def upgrade(api):
     api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1, "stale plan mutated environment")
     ready = api.request("POST", path + "/validate", {"revision": ready["revision"]})
+    # A descriptive rename must not invalidate an already validated plan.
+    renamed = api.request("PATCH", "/api/v1/components/atlas-core",
+                          {"name": "阿特拉斯核心", "description": "", "revision": 1})
+    require(renamed["revision"] == 2, "rename between validate and apply failed")
     applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
     require(applied["environment"]["revision"] == 2 and applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "plan application failed")
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)

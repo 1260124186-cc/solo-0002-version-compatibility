@@ -26,7 +26,7 @@ type State struct {
 
 func NewState() *State {
 	return &State{
-		Schema: 1,
+		Schema: 2,
 		Catalog: domain.Catalog{
 			Components: make(map[string]domain.Component),
 			Releases:   make(map[string]map[string]domain.Release),

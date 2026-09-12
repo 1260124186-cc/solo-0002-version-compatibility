@@ -8,7 +8,7 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema != 2 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
@@ -23,6 +23,9 @@ func validateState(s *State) error {
 		}
 		if id != component.ID {
 			return fmt.Errorf("component key mismatch")
+		}
+		if component.Revision == 0 {
+			return fmt.Errorf("component is missing its metadata revision")
 		}
 		if err := domain.ValidateComponent(domain.ComponentInput{ID: id, Name: component.Name, Description: component.Description}); err != nil {
 			return err

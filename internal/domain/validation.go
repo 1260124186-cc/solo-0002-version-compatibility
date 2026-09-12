@@ -84,6 +84,16 @@ func ValidateComponent(input ComponentInput) error {
 	return ValidateText(input.Description, "description", 0, 2000)
 }
 
+func ValidateComponentUpdate(input ComponentUpdateInput) error {
+	if input.Revision == 0 {
+		return Invalid("revision must be positive")
+	}
+	if err := ValidateText(input.Name, "name", 1, 120); err != nil {
+		return err
+	}
+	return ValidateText(input.Description, "description", 0, 2000)
+}
+
 func ValidateRelease(input ReleaseInput, componentID string) error {
 	if _, err := semver.Parse(input.Version); err != nil {
 		return Invalid("%s", err)

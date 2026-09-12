@@ -3,10 +3,15 @@ package domain
 import "time"
 
 type Component struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Revision tracks metadata-only edits (name/description). It is independent
+	// of Catalog.Revision, so renaming a component never invalidates resolution
+	// results or ready plans.
+	Revision  uint64     `json:"revision"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 type Release struct {
@@ -22,6 +27,15 @@ type ComponentInput struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+}
+
+// ComponentUpdateInput carries descriptive metadata plus the component
+// revision the caller based its view on. The identifier is deliberately
+// absent: it is immutable once a component exists.
+type ComponentUpdateInput struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Revision    uint64 `json:"revision"`
 }
 
 type ReleaseInput struct {

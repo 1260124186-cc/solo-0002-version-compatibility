@@ -37,10 +37,27 @@ func readState(path string) (*State, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
 	}
+	migrateState(&state)
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)
 	}
 	return &state, nil
+}
+
+// migrateState upgrades persisted data in place so older data directories stay
+// readable. Schema 1 predates per-component metadata revisions: those
+// components start at revision 1. The migration neither records events nor
+// moves catalog/environment revisions, so resolution data is unchanged.
+func migrateState(state *State) {
+	if state.Schema == 1 {
+		for id, component := range state.Catalog.Components {
+			if component.Revision == 0 {
+				component.Revision = 1
+				state.Catalog.Components[id] = component
+			}
+		}
+		state.Schema = 2
+	}
 }
 
 func writeState(path string, state *State) error {
