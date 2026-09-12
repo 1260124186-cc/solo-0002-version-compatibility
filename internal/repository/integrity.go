@@ -8,7 +8,7 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema != SchemaVersion || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil || s.Provenance == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
@@ -99,6 +99,59 @@ func validateState(s *State) error {
 	}
 	if previous != s.Revision {
 		return fmt.Errorf("event tail does not match state revision")
+	}
+	for id, records := range s.Provenance {
+		env, ok := s.Environments[id]
+		if !ok {
+			return fmt.Errorf("provenance references unknown environment %s", id)
+		}
+		if len(records) == 0 {
+			return fmt.Errorf("environment %s has empty provenance", id)
+		}
+		var seen uint64
+		for i, record := range records {
+			if record.EnvironmentID != id || record.Revision == 0 || record.Revision > env.Revision {
+				return fmt.Errorf("invalid provenance revision for environment %s", id)
+			}
+			if record.Revision <= seen {
+				return fmt.Errorf("provenance revisions out of order for environment %s", id)
+			}
+			seen = record.Revision
+			if record.CatalogRevision > s.Catalog.Revision {
+				return fmt.Errorf("provenance references a future catalog revision")
+			}
+			switch record.Kind {
+			case domain.OriginCreated:
+				if i != 0 || record.Revision != 1 || record.PlanID != "" || record.BaseRevision != 0 {
+					return fmt.Errorf("invalid creation provenance for environment %s", id)
+				}
+			case domain.OriginBaseline:
+				if i != 0 || record.PlanID != "" || record.BaseRevision != 0 {
+					return fmt.Errorf("invalid baseline provenance for environment %s", id)
+				}
+			case domain.OriginApplied:
+				plan, ok := s.Plans[record.PlanID]
+				if !ok || plan.EnvironmentID != id || plan.State != domain.Applied {
+					return fmt.Errorf("provenance references an invalid plan")
+				}
+				if record.BaseRevision != plan.BaseRevision || record.CatalogRevision != plan.CatalogRevision || record.Revision != record.BaseRevision+1 {
+					return fmt.Errorf("applied provenance does not match its plan")
+				}
+			default:
+				return fmt.Errorf("invalid provenance kind")
+			}
+			if err := ValidateSelection(s.Catalog, record.Roots, record.Resolved, false); err != nil {
+				return err
+			}
+		}
+		if seen != env.Revision {
+			return fmt.Errorf("provenance does not explain the current revision of environment %s", id)
+		}
+	}
+	for id := range s.Environments {
+		if len(s.Provenance[id]) == 0 {
+			return fmt.Errorf("environment %s has no provenance", id)
+		}
 	}
 	return nil
 }

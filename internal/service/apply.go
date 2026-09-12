@@ -45,6 +45,17 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		plan.UpdatedAt = at
 		state.Environments[env.ID] = env
 		state.Plans[id] = plan
+		state.AppendProvenance(domain.Provenance{
+			EnvironmentID:   env.ID,
+			Revision:        env.Revision,
+			Kind:            domain.OriginApplied,
+			PlanID:          plan.ID,
+			BaseRevision:    plan.BaseRevision,
+			CatalogRevision: plan.CatalogRevision,
+			Roots:           domain.CopyStrings(plan.Roots),
+			Resolved:        domain.CopyStrings(plan.Resolved),
+			At:              at,
+		})
 		state.Record("plan", id, "applied", at)
 		result = AppliedResult{Plan: plan, Environment: env}
 		return nil

@@ -150,9 +150,19 @@ def upgrade(api):
     release(api, "atlas-core", "3.0.0")
     api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1, "stale plan mutated environment")
+    api.request("GET", "/api/v1/environments/integration/provenance/2", expected=404)
     ready = api.request("POST", path + "/validate", {"revision": ready["revision"]})
     applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
     require(applied["environment"]["revision"] == 2 and applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "plan application failed")
+    origin = api.request("GET", "/api/v1/environments/integration/provenance/2")
+    require(origin["kind"] == "plan_applied" and origin["plan_id"] == first["id"], "applied revision is not traced to its plan")
+    require(origin["base_revision"] == 1 and origin["catalog_revision"] == ready["catalog_revision"], "provenance lost the revisions the plan was based on")
+    require(origin["roots"] == {"render-engine": "2.0.0"} and origin["resolved"]["atlas-core"] == "2.0.0", "provenance lost the resolved set")
+    initial = api.request("GET", "/api/v1/environments/integration/provenance/1")
+    require(initial["kind"] == "created" and "plan_id" not in initial, "environment creation has no initial origin")
+    history = api.request("GET", "/api/v1/environments/integration/provenance")
+    require(history["total"] == 2 and [item["revision"] for item in history["items"]] == [2, 1], "provenance listing is wrong")
+    api.request("GET", "/api/v1/environments/integration/provenance/3", expected=404)
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
     other = "/api/v1/plans/" + second["id"]
     api.request("POST", other + "/validate", {"revision": 1}, 409)
@@ -163,6 +173,19 @@ def upgrade(api):
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration/provenance/2")["plan_id"] == first["id"], "provenance lost after restart")
+    api.stop()
+    state_file = api.directory / "state" / "state.json"
+    data = json.loads(state_file.read_text())
+    require(data["schema"] == 2, "state schema did not advance")
+    del data["provenance"]
+    data["schema"] = 1
+    state_file.write_text(json.dumps(data))
+    api.start()
+    origin = api.request("GET", "/api/v1/environments/integration/provenance/2")
+    require(origin["kind"] == "baseline" and "plan_id" not in origin, "existing environment did not establish a baseline origin")
+    require(origin["resolved"]["atlas-core"] == "2.0.0", "baseline origin lost the current resolved set")
+    api.request("GET", "/api/v1/environments/integration/provenance/1", expected=404)
 
 
 def main():

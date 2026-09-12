@@ -37,6 +37,9 @@ func readState(path string) (*State, error) {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
 	}
+	if err := migrateState(&state); err != nil {
+		return nil, fmt.Errorf("invalid state: %w", err)
+	}
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)
 	}

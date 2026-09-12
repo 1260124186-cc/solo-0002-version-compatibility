@@ -38,6 +38,15 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 			return domain.Limit("environment capacity reached")
 		}
 		current.Environments[input.ID] = env
+		current.AppendProvenance(domain.Provenance{
+			EnvironmentID:   input.ID,
+			Revision:        env.Revision,
+			Kind:            domain.OriginCreated,
+			CatalogRevision: resolved.CatalogRevision,
+			Roots:           domain.CopyStrings(env.Roots),
+			Resolved:        domain.CopyStrings(env.Resolved),
+			At:              at,
+		})
 		current.Record("environment", input.ID, "created", at)
 		return nil
 	})
