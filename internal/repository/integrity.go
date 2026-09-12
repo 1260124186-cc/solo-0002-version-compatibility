@@ -68,6 +68,15 @@ func validateState(s *State) error {
 		if err := ValidateSelection(s.Catalog, env.Roots, env.Resolved, true); err != nil {
 			return err
 		}
+		if env.DerivedFrom != nil {
+			source, ok := s.Environments[env.DerivedFrom.SourceID]
+			if !ok || env.DerivedFrom.SourceID == id {
+				return fmt.Errorf("invalid derivation source")
+			}
+			if env.DerivedFrom.SourceRevision == 0 || env.DerivedFrom.SourceRevision > source.Revision {
+				return fmt.Errorf("invalid derivation revision")
+			}
+		}
 	}
 	for id, plan := range s.Plans {
 		if id != plan.ID || plan.Revision == 0 {

@@ -165,15 +165,68 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def derive(api):
+    populate(api)
+    source = api.request("POST", "/api/v1/environments",
+                         {"id": "baseline", "name": "基线环境", "roots": {"render-engine": "1.0.0"}}, 201)
+    require(source["resolved"] == {"render-engine": "1.0.0", "atlas-core": "1.0.0"}, "source environment resolution failed")
+    api.request("POST", "/api/v1/environments/ghost/derive",
+                {"source_revision": 1, "id": "canary", "name": "灰度环境"}, 404)
+    api.request("POST", "/api/v1/environments/baseline/derive",
+                {"source_revision": 2, "id": "canary", "name": "灰度环境"}, 409)
+    api.request("POST", "/api/v1/environments/baseline/derive",
+                {"source_revision": 1, "id": "Canary", "name": "灰度环境"}, 400)
+    release(api, "atlas-core", "1.5.0")
+    derived = api.request("POST", "/api/v1/environments/baseline/derive",
+                          {"source_revision": 1, "id": "canary", "name": "灰度环境"}, 201)
+    require(derived["revision"] == 1, "derived environment must start at revision 1")
+    require(derived["roots"] == source["roots"], "derived roots differ from the source")
+    require(derived["resolved"] == source["resolved"], "derivation re-resolved instead of copying the exact set")
+    require(derived["derived_from"] == {"source_id": "baseline", "source_revision": 1}, "derivation origin is not recorded")
+    api.request("POST", "/api/v1/environments/baseline/derive",
+                {"source_revision": 1, "id": "canary", "name": "重复标识"}, 409)
+    upgrade_env(api, "canary", 1)
+    baseline = api.request("GET", "/api/v1/environments/baseline")
+    require(baseline["revision"] == 1 and baseline["resolved"] == source["resolved"],
+            "evolving the derived environment changed its source")
+    upgrade_env(api, "baseline", 1)
+    api.request("POST", "/api/v1/environments/baseline/derive",
+                {"source_revision": 1, "id": "slot-b", "name": "过期修订"}, 409)
+    follower = api.request("POST", "/api/v1/environments/baseline/derive",
+                           {"source_revision": 2, "id": "slot-b", "name": "跟随环境"}, 201)
+    require(follower["resolved"] == baseline_resolved(api, "baseline"), "derivation did not copy the current source set")
+    canary = api.request("GET", "/api/v1/environments/canary")
+    require(canary["revision"] == 2 and canary["resolved"]["atlas-core"] == "2.0.0",
+            "evolving the source changed the derived environment")
+    api.stop()
+    api.start()
+    reloaded = api.request("GET", "/api/v1/environments/canary")
+    require(reloaded["derived_from"] == {"source_id": "baseline", "source_revision": 1},
+            "derivation origin lost after restart")
+
+
+def baseline_resolved(api, env_id):
+    return api.request("GET", "/api/v1/environments/" + env_id)["resolved"]
+
+
+def upgrade_env(api, env_id, base_revision):
+    plan = api.request("POST", "/api/v1/plans",
+                       {"environment_id": env_id, "base_revision": base_revision,
+                        "roots": {"render-engine": "2.0.0"}, "reason": "升级兼容集合"}, 201)
+    path = "/api/v1/plans/" + plan["id"]
+    ready = api.request("POST", path + "/validate", {"revision": 1})
+    api.request("POST", path + "/apply", {"revision": ready["revision"]})
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "derive"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "derive": derive}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

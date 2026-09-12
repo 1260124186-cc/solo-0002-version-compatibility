@@ -51,6 +51,18 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 环境派生
+
+已确认的环境可以派生出初始组件集合完全一致的新环境：
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/environments/staging/derive -H 'Content-Type: application/json' -d '{"source_revision":1,"id":"canary","name":"灰度环境"}'
+```
+
+派生直接沿用来源环境的根依赖与精确解析集合，不重新求解，即使目录中已存在更高版本也不会重新挑选。请求必须携带来源当前修订号：来源在派生前被修改时返回 409，应重新读取来源后重试，而不会拼出两次读取的混合状态。响应中的 `derived_from` 记录来源标识与来源修订号，便于追溯。派生环境修订号从 1 开始，此后与来源各自独立演进，修改任何一方都不影响另一方。
+
+派生与普通创建环境、环境复制在目录变化处理上的区别：普通创建先对目录快照求解，提交时重新检查目录修订号，求解期间目录变化会返回 409，因为结果依赖目录内容；派生不读取目录、不重新求解，目录变化不影响结果，因此只对来源环境修订号做冲突检查。本服务不提供环境复制接口；数据目录级别的整体备份只能在服务停止后进行，属于运维操作，不涉及任何修订号检查。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -62,6 +74,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| POST /environments/{id}/derive | 以来源环境的精确集合派生新环境 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -94,9 +107,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py derive
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消，以及派生的精确集合沿用、来源修订号冲突、来源追溯与派生后独立演进。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

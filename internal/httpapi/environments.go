@@ -21,6 +21,21 @@ func (a *API) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusCreated, result)
 }
 
+func (a *API) deriveEnvironment(w http.ResponseWriter, r *http.Request) {
+	var input domain.DeriveInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.DeriveEnvironment(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/environments/"+result.ID)
+	respond(w, http.StatusCreated, result)
+}
+
 func (a *API) environments(w http.ResponseWriter, r *http.Request) {
 	if err := queryOnly(r, "offset", "limit"); err != nil {
 		fail(w, err)

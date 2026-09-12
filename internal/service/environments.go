@@ -44,6 +44,53 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 	return env, err
 }
 
+// DeriveEnvironment copies the source's exact roots and resolved set without
+// re-resolving, so newer catalog versions are never picked. The source
+// revision check and the copy happen inside one serialized update, which
+// keeps a concurrent source change from leaking into a mixed result.
+func (s *Service) DeriveEnvironment(ctx context.Context, sourceID string, input domain.DeriveInput) (domain.Environment, error) {
+	if err := domain.ValidateID(input.ID); err != nil {
+		return domain.Environment{}, err
+	}
+	if err := domain.ValidateText(input.Name, "name", 1, 120); err != nil {
+		return domain.Environment{}, err
+	}
+	if input.SourceRevision == 0 {
+		return domain.Environment{}, domain.Invalid("source_revision must be positive")
+	}
+	at := now()
+	var env domain.Environment
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		source, exists := state.Environments[sourceID]
+		if !exists {
+			return domain.Missing("environment", sourceID)
+		}
+		if source.Revision != input.SourceRevision {
+			return domain.Conflict("source environment revision is %d, expected %d; re-read the source and retry", source.Revision, input.SourceRevision)
+		}
+		if _, exists := state.Environments[input.ID]; exists {
+			return domain.Conflict("environment already exists")
+		}
+		if len(state.Environments) >= 200 {
+			return domain.Limit("environment capacity reached")
+		}
+		env = domain.Environment{
+			ID:          input.ID,
+			Name:        input.Name,
+			Roots:       domain.CopyStrings(source.Roots),
+			Resolved:    domain.CopyStrings(source.Resolved),
+			Revision:    1,
+			DerivedFrom: &domain.Derivation{SourceID: sourceID, SourceRevision: source.Revision},
+			CreatedAt:   at,
+			UpdatedAt:   at,
+		}
+		state.Environments[input.ID] = env
+		state.Record("environment", input.ID, "derived", at)
+		return nil
+	})
+	return env, err
+}
+
 func (s *Service) ListEnvironments(ctx context.Context) ([]domain.Environment, error) {
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
