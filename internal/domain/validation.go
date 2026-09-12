@@ -96,3 +96,20 @@ func ValidateRelease(input ReleaseInput, componentID string) error {
 	}
 	return nil
 }
+
+func ValidateVersionList(versions []string) error {
+	if len(versions) == 0 || len(versions) > MaxReleases {
+		return Invalid("versions must contain 1–%d entries", MaxReleases)
+	}
+	seen := make(map[string]bool, len(versions))
+	for _, version := range versions {
+		if _, err := semver.Parse(version); err != nil {
+			return Invalid("%s", err)
+		}
+		if seen[version] {
+			return Invalid("duplicate version %q", version)
+		}
+		seen[version] = true
+	}
+	return nil
+}

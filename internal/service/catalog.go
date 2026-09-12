@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"solo-0002-version-compatibility/internal/domain"
 	"solo-0002-version-compatibility/internal/repository"
@@ -113,10 +114,8 @@ func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (doma
 		if release.State != domain.Available {
 			return domain.Conflict("release is already withdrawn")
 		}
-		for _, envID := range domain.SortedKeys(state.Environments) {
-			if state.Environments[envID].Resolved[id] == version {
-				return domain.Conflict("release is used by environment %s", envID)
-			}
+		if reasons := releaseUsage(state, id, version); len(reasons) > 0 {
+			return domain.ConflictWith(reasons, "release is %s", reasons[0])
 		}
 		at := now()
 		release.State = domain.Withdrawn
@@ -128,4 +127,87 @@ func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (doma
 		return nil
 	})
 	return result, err
+}
+
+type WithdrawnBatch struct {
+	ComponentID     string           `json:"component_id"`
+	Releases        []domain.Release `json:"releases"`
+	CatalogRevision uint64           `json:"catalog_revision"`
+}
+
+// WithdrawReleases withdraws several releases of one component atomically:
+// every version is checked on its own, any blocker rejects the whole batch,
+// and an accepted batch commits one catalog revision with one event per version.
+func (s *Service) WithdrawReleases(ctx context.Context, id string, input domain.BatchWithdrawInput) (WithdrawnBatch, error) {
+	if err := domain.ValidateVersionList(input.Versions); err != nil {
+		return WithdrawnBatch{}, err
+	}
+	versions := make([]string, len(input.Versions))
+	copy(versions, input.Versions)
+	sort.Slice(versions, func(i, j int) bool {
+		a, _ := semver.Parse(versions[i])
+		b, _ := semver.Parse(versions[j])
+		return a.Compare(b) > 0
+	})
+	var result WithdrawnBatch
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		if _, exists := state.Catalog.Components[id]; !exists {
+			return domain.Missing("component", id)
+		}
+		releases := state.Catalog.Releases[id]
+		for _, version := range versions {
+			if _, exists := releases[version]; !exists {
+				return domain.Missing("release", id+"@"+version)
+			}
+		}
+		blocked := 0
+		conflicts := make([]string, 0)
+		for _, version := range versions {
+			release := releases[version]
+			if release.State != domain.Available {
+				blocked++
+				conflicts = append(conflicts, id+"@"+version+": already withdrawn")
+				continue
+			}
+			if reasons := releaseUsage(state, id, version); len(reasons) > 0 {
+				blocked++
+				conflicts = append(conflicts, id+"@"+version+": "+strings.Join(reasons, "; "))
+			}
+		}
+		if blocked > 0 {
+			return domain.ConflictWith(conflicts, "%d of %d releases cannot be withdrawn; the batch was rejected", blocked, len(versions))
+		}
+		at := now()
+		withdrawn := make([]domain.Release, 0, len(versions))
+		for _, version := range versions {
+			release := releases[version]
+			release.State = domain.Withdrawn
+			release.WithdrawnAt = &at
+			releases[version] = release
+			state.Record("release", id+"@"+version, "withdrawn", at)
+			withdrawn = append(withdrawn, release)
+		}
+		state.Catalog.Revision++
+		result = WithdrawnBatch{ComponentID: id, Releases: withdrawn, CatalogRevision: state.Catalog.Revision}
+		return nil
+	})
+	return result, err
+}
+
+// releaseUsage lists why a release cannot be withdrawn: every environment
+// whose resolved set selects it and every ready plan that would apply it.
+func releaseUsage(state *repository.State, id, version string) []string {
+	var reasons []string
+	for _, envID := range domain.SortedKeys(state.Environments) {
+		if state.Environments[envID].Resolved[id] == version {
+			reasons = append(reasons, "used by environment "+envID)
+		}
+	}
+	for _, planID := range domain.SortedKeys(state.Plans) {
+		plan := state.Plans[planID]
+		if plan.State == domain.Ready && plan.Resolved[id] == version {
+			reasons = append(reasons, "used by ready plan "+planID)
+		}
+	}
+	return reasons
 }

@@ -24,6 +24,10 @@ func Conflict(format string, args ...any) error {
 	return &Fault{Code: "conflict", Detail: fmt.Sprintf(format, args...)}
 }
 
+func ConflictWith(reasons []string, format string, args ...any) error {
+	return &Fault{Code: "conflict", Detail: fmt.Sprintf(format, args...), Conflicts: reasons}
+}
+
 func Limit(detail string) error {
 	return &Fault{Code: "limit_exceeded", Detail: detail}
 }

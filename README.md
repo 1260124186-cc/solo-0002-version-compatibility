@@ -51,6 +51,8 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+批量撤回使用 `POST /api/v1/components/{id}/releases/withdraw`，请求为 `{"versions":["1.0.0","1.1.0"]}`，版本须属于同一组件且不重复。每个版本按与单个撤回相同的规则检查：已被环境已解析集合或 ready 方案选用的版本不能撤回。任一版本被阻止时整批拒绝，响应 409 且 `conflicts` 逐条列出被阻止版本及原因，所有版本保持不变；全部通过时一次提交生效，目录修订号递增一次，每个版本各记录一条 withdrawn 事件。响应包含撤回后的 `releases` 与新的 `catalog_revision`。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -59,6 +61,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET /components/{id} | 获取组件详情 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
+| POST /components/{id}/releases/withdraw | 批量撤回同一组件的多个版本，全部成功或全部不变 |
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
@@ -79,7 +82,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
-- 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
+- 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`。无解时 `conflicts` 最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明；批量撤回被拒时 `conflicts` 逐个列出被阻止的版本及各自原因。
 - 400 表示输入错误；404 表示对象不存在；409 表示状态或修订号冲突；413 表示请求过大；415 表示媒体类型错误；422 表示无解或预算耗尽；503 表示繁忙。内部持久化错误返回 500，不暴露磁盘路径。
 
 ## 数据与恢复

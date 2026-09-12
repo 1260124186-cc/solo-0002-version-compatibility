@@ -46,6 +46,8 @@ func (r *Repository) Snapshot(ctx context.Context) (*State, error) {
 }
 
 // Update serializes writers and makes failure atomic for memory and disk.
+// A mutation must record at least one event; a batch mutation records one
+// event per affected entity and all of them commit together or not at all.
 // The mutation function must not retain references after returning.
 func (r *Repository) Update(ctx context.Context, mutate func(*State) error) error {
 	if err := ctx.Err(); err != nil {
@@ -66,8 +68,8 @@ func (r *Repository) Update(ctx context.Context, mutate func(*State) error) erro
 	if err := mutate(candidate); err != nil {
 		return err
 	}
-	if candidate.Revision != r.state.Revision+1 {
-		return fmt.Errorf("mutation must record exactly one event")
+	if candidate.Revision <= r.state.Revision {
+		return fmt.Errorf("mutation must record at least one event")
 	}
 	if err := ctx.Err(); err != nil {
 		return err

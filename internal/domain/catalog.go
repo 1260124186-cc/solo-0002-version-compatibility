@@ -29,6 +29,10 @@ type ReleaseInput struct {
 	Requires map[string]string `json:"requires"`
 }
 
+type BatchWithdrawInput struct {
+	Versions []string `json:"versions"`
+}
+
 type Catalog struct {
 	Revision   uint64                        `json:"revision"`
 	Components map[string]Component          `json:"components"`

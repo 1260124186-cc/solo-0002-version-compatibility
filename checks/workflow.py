@@ -113,12 +113,41 @@ def catalog(api):
     result = api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {})
     require(result["state"] == "withdrawn", "release did not become withdrawn")
     api.request("POST", "/api/v1/resolve", {"roots": {"atlas-core": "*"}}, 422)
+    for version in ("2.0.0", "3.0.0", "4.0.0"):
+        release(api, "atlas-core", version)
+    batch = api.request("POST", "/api/v1/components/atlas-core/releases/withdraw",
+                        {"versions": ["2.0.0", "3.0.0"]})
+    require([item["version"] for item in batch["releases"]] == ["3.0.0", "2.0.0"],
+            "batch withdrawal did not return releases in descending order")
+    require(all(item["state"] == "withdrawn" for item in batch["releases"]),
+            "batch withdrawal left a release available")
+    require(batch["catalog_revision"] == 7, "accepted batch did not bump the catalog revision once")
+    result = api.request("POST", "/api/v1/components/atlas-core/releases/withdraw",
+                         {"versions": ["2.0.0", "4.0.0"]}, 409)
+    require(any("atlas-core@2.0.0" in item for item in result["error"]["conflicts"]),
+            "batch rejection did not name the blocked release")
+    api.request("POST", "/api/v1/components/atlas-core/releases/withdraw", {"versions": ["9.9.9"]}, 404)
+    api.request("POST", "/api/v1/components/atlas-core/releases/withdraw", {"versions": []}, 400)
+    api.request("POST", "/api/v1/components/atlas-core/releases/withdraw",
+                {"versions": ["4.0.0", "4.0.0"]}, 400)
+    items = api.request("GET", "/api/v1/components/atlas-core/releases")["items"]
+    require(next(item for item in items if item["version"] == "4.0.0")["state"] == "available",
+            "rejected batch still withdrew a release")
+    batch = api.request("POST", "/api/v1/components/atlas-core/releases/withdraw", {"versions": ["4.0.0"]})
+    require(batch["catalog_revision"] == 8, "rejected batches changed the catalog revision")
     api.stop()
     api.start()
     result = api.request("GET", "/api/v1/components/atlas-core/releases")
-    require(len(result["items"]) == 1 and result["items"][0]["state"] == "withdrawn", "durable version state changed after restart")
+    require(len(result["items"]) == 4
+            and all(item["state"] == "withdrawn" for item in result["items"]),
+            "durable version state changed after restart")
     events = api.request("GET", "/api/v1/events")["items"]
-    require([event["action"] for event in events] == ["created", "added", "withdrawn"], "failed writes altered events")
+    require([event["action"] for event in events] ==
+            ["created", "added", "withdrawn", "added", "added", "added",
+             "withdrawn", "withdrawn", "withdrawn"], "failed writes altered events")
+    require([event["entity_id"] for event in events[-3:]] ==
+            ["atlas-core@3.0.0", "atlas-core@2.0.0", "atlas-core@4.0.0"],
+            "batch withdrawal events are missing or misordered")
 
 
 def resolve(api):
@@ -159,6 +188,26 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    result = api.request("POST", "/api/v1/components/atlas-core/releases/withdraw",
+                         {"versions": ["1.0.0", "2.0.0"]}, 409)
+    require(any("atlas-core@2.0.0" in item and "environment integration" in item
+                for item in result["error"]["conflicts"]),
+            "batch rejection did not explain the environment usage")
+    items = api.request("GET", "/api/v1/components/atlas-core/releases")["items"]
+    require(next(item for item in items if item["version"] == "1.0.0")["state"] == "available",
+            "rejected batch withdrew an unblocked release")
+    third = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 2,
+                                                  "roots": {"render-engine": "1.0.0"}, "reason": "回退验证"}, 201)
+    ready = api.request("POST", "/api/v1/plans/" + third["id"] + "/validate", {"revision": 1})
+    require(ready["resolved"]["atlas-core"] == "1.0.0", "downgrade plan resolved an unexpected version")
+    result = api.request("POST", "/api/v1/components/atlas-core/releases/withdraw",
+                         {"versions": ["1.0.0"]}, 409)
+    require(any("ready plan" in item for item in result["error"]["conflicts"]),
+            "batch rejection did not explain the ready plan usage")
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {}, 409)
+    api.request("POST", "/api/v1/plans/" + third["id"] + "/cancel", {"revision": ready["revision"]})
+    batch = api.request("POST", "/api/v1/components/atlas-core/releases/withdraw", {"versions": ["1.0.0"]})
+    require(batch["releases"][0]["state"] == "withdrawn", "batch withdrawal after cancellation failed")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")

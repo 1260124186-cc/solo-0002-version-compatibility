@@ -96,6 +96,20 @@ func (a *API) withdraw(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, result)
 }
 
+func (a *API) withdrawBatch(w http.ResponseWriter, r *http.Request) {
+	var input domain.BatchWithdrawInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.WithdrawReleases(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
 func (a *API) resolve(w http.ResponseWriter, r *http.Request) {
 	var input domain.ResolutionInput
 	if err := decode(w, r, &input); err != nil {
