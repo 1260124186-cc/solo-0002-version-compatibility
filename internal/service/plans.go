@@ -13,6 +13,9 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 	if err := domain.ValidateRequirements(input.Roots, false); err != nil {
 		return domain.Plan{}, err
 	}
+	if err := domain.ValidateOverrides(input.Overrides, input.Roots); err != nil {
+		return domain.Plan{}, err
+	}
 	if err := domain.ValidateText(input.Reason, "reason", 1, 1000); err != nil {
 		return domain.Plan{}, err
 	}
@@ -24,7 +27,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 		return domain.Plan{}, err
 	}
 	at := now()
-	plan := domain.Plan{ID: id, EnvironmentID: input.EnvironmentID, BaseRevision: input.BaseRevision, Revision: 1, Roots: domain.CopyStrings(input.Roots), Resolved: make(map[string]string), Changes: make([]domain.Change, 0), State: domain.Draft, Reason: input.Reason, CreatedAt: at, UpdatedAt: at}
+	plan := domain.Plan{ID: id, EnvironmentID: input.EnvironmentID, BaseRevision: input.BaseRevision, Revision: 1, Roots: domain.CopyStrings(input.Roots), Overrides: domain.CopyStrings(input.Overrides), Resolved: make(map[string]string), Changes: make([]domain.Change, 0), State: domain.Draft, Reason: input.Reason, CreatedAt: at, UpdatedAt: at}
 	err = s.repo.Update(ctx, func(state *repository.State) error {
 		env, exists := state.Environments[input.EnvironmentID]
 		if !exists {
@@ -39,6 +42,11 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 		for _, component := range domain.SortedKeys(input.Roots) {
 			if _, exists := state.Catalog.Components[component]; !exists {
 				return domain.Missing("component", component)
+			}
+		}
+		for _, component := range domain.SortedKeys(input.Overrides) {
+			if _, exists := state.Catalog.Components[component]; !exists {
+				return domain.Missing("overridden component", component)
 			}
 		}
 		state.Plans[id] = plan
@@ -111,7 +119,7 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 	if err := checkEnvironment(env, plan.BaseRevision); err != nil {
 		return plan, err
 	}
-	result, err := s.solver.Resolve(ctx, state.Catalog, plan.Roots)
+	result, err := s.solver.ResolveRequest(ctx, state.Catalog, resolution.Request{Roots: plan.Roots, Overrides: plan.Overrides})
 	if err != nil {
 		return plan, err
 	}

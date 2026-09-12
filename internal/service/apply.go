@@ -32,11 +32,12 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		if err := checkEnvironment(env, plan.BaseRevision); err != nil {
 			return err
 		}
-		if err := repository.ValidateSelection(state.Catalog, plan.Roots, plan.Resolved, true); err != nil {
+		if err := repository.ValidateSelectionWithOverrides(state.Catalog, plan.Roots, plan.Overrides, plan.Resolved, true); err != nil {
 			return err
 		}
 		at := now()
 		env.Roots = domain.CopyStrings(plan.Roots)
+		env.Overrides = domain.CopyStrings(plan.Overrides)
 		env.Resolved = domain.CopyStrings(plan.Resolved)
 		env.Revision++
 		env.UpdatedAt = at

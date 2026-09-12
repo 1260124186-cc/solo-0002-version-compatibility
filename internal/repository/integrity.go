@@ -65,7 +65,7 @@ func validateState(s *State) error {
 		if err := domain.ValidateText(env.Name, "name", 1, 120); err != nil {
 			return err
 		}
-		if err := ValidateSelection(s.Catalog, env.Roots, env.Resolved, true); err != nil {
+		if err := ValidateSelectionWithOverrides(s.Catalog, env.Roots, env.Overrides, env.Resolved, true); err != nil {
 			return err
 		}
 	}
@@ -80,10 +80,13 @@ func validateState(s *State) error {
 		if err := domain.ValidateRequirements(plan.Roots, false); err != nil {
 			return err
 		}
+		if err := domain.ValidateOverrides(plan.Overrides, plan.Roots); err != nil {
+			return err
+		}
 		switch plan.State {
 		case domain.Draft, domain.Cancelled:
 		case domain.Ready, domain.Applied:
-			if err := ValidateSelection(s.Catalog, plan.Roots, plan.Resolved, false); err != nil {
+			if err := ValidateSelectionWithOverrides(s.Catalog, plan.Roots, plan.Overrides, plan.Resolved, false); err != nil {
 				return err
 			}
 		default:
@@ -103,9 +106,16 @@ func validateState(s *State) error {
 	return nil
 }
 
-// ValidateSelection also verifies that the set contains no unreachable entries.
+// ValidateSelection also verifies that overrides are exact and the set contains no unreachable entries.
 func ValidateSelection(c domain.Catalog, roots, selected map[string]string, available bool) error {
+	return ValidateSelectionWithOverrides(c, roots, nil, selected, available)
+}
+
+func ValidateSelectionWithOverrides(c domain.Catalog, roots, overrides, selected map[string]string, available bool) error {
 	if err := domain.ValidateRequirements(roots, false); err != nil {
+		return err
+	}
+	if err := domain.ValidateOverrides(overrides, roots); err != nil {
 		return err
 	}
 	seen := make(map[string]bool)
@@ -144,6 +154,18 @@ func ValidateSelection(c domain.Catalog, roots, selected map[string]string, avai
 	for _, id := range domain.SortedKeys(roots) {
 		if err := visit(id, roots[id]); err != nil {
 			return err
+		}
+	}
+	for _, id := range domain.SortedKeys(overrides) {
+		if _, ok := c.Components[id]; !ok {
+			return fmt.Errorf("override references unknown component %s", id)
+		}
+		version, exists := selected[id]
+		if !exists {
+			return fmt.Errorf("override for %s is unreachable", id)
+		}
+		if version != overrides[id] {
+			return fmt.Errorf("selection for %s is %s, override requires %s", id, version, overrides[id])
 		}
 	}
 	if len(seen) != len(selected) {

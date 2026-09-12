@@ -23,6 +23,7 @@ type Plan struct {
 	Revision        uint64            `json:"revision"`
 	CatalogRevision uint64            `json:"catalog_revision"`
 	Roots           map[string]string `json:"roots"`
+	Overrides       map[string]string `json:"overrides"`
 	Resolved        map[string]string `json:"resolved"`
 	Changes         []Change          `json:"changes"`
 	State           string            `json:"state"`
@@ -35,6 +36,7 @@ type PlanInput struct {
 	EnvironmentID string            `json:"environment_id"`
 	BaseRevision  uint64            `json:"base_revision"`
 	Roots         map[string]string `json:"roots"`
+	Overrides     map[string]string `json:"overrides"`
 	Reason        string            `json:"reason"`
 }
 

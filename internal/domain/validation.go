@@ -50,6 +50,24 @@ func ValidateRequirements(requirements map[string]string, allowEmpty bool) error
 	return nil
 }
 
+func ValidateOverrides(overrides, roots map[string]string) error {
+	if len(overrides) > MaxDependencies {
+		return Invalid("overrides must contain at most %d entries", MaxDependencies)
+	}
+	for _, id := range SortedKeys(overrides) {
+		if err := ValidateID(id); err != nil {
+			return err
+		}
+		if _, isRoot := roots[id]; isRoot {
+			return Invalid("override for %s must target a non-root component", id)
+		}
+		if _, err := semver.Parse(overrides[id]); err != nil {
+			return Invalid("override for %s: %s", id, err)
+		}
+	}
+	return nil
+}
+
 func boolMinimum(allowEmpty bool) int {
 	if allowEmpty {
 		return 0

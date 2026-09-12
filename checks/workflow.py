@@ -129,6 +129,16 @@ def resolve(api):
     require(result["resolved"]["render-engine"] == "1.0.0", "search did not backtrack")
     result = api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "2.0.0", "atlas-core": "^1.0.0"}}, 422)
     require(result["error"]["code"] == "no_solution" and result["error"]["conflicts"], "missing conflict evidence")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"render-engine": "*"}, "overrides": {"atlas-core": "1.0.0"}})
+    require(result["resolved"] == {"render-engine": "1.0.0", "atlas-core": "1.0.0"}, "override did not force the transitive version")
+    result = api.request("POST", "/api/v1/resolve",
+                         {"roots": {"render-engine": "2.0.0"}, "overrides": {"atlas-core": "1.0.0"}}, 422)
+    require(result["error"]["code"] == "no_solution", "override conflict returned wrong error")
+    require(any("render-engine@2.0.0 requires atlas-core ^2.0.0" in item
+                and "environment override requires atlas-core 1.0.0" in item
+                for item in result["error"]["conflicts"]), "override conflict evidence is not explicit")
+    api.request("POST", "/api/v1/resolve",
+                {"roots": {"atlas-core": "*"}, "overrides": {"atlas-core": "1.0.0"}}, 400)
     for name in ("cycle-alpha", "cycle-beta"):
         component(api, name)
     release(api, "cycle-alpha", "1.0.0", {"cycle-beta": "~1.0.0"})
@@ -159,10 +169,24 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    override_body = {
+        "environment_id": "integration",
+        "base_revision": 2,
+        "roots": {"render-engine": "1.0.0"},
+        "overrides": {"atlas-core": "1.0.0"},
+        "reason": "锁定传递组件版本",
+    }
+    override_plan = api.request("POST", "/api/v1/plans", override_body, 201)
+    ready = api.request("POST", "/api/v1/plans/" + override_plan["id"] + "/validate", {"revision": 1})
+    applied = api.request("POST", "/api/v1/plans/" + override_plan["id"] + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 3, "override did not advance environment revision")
+    require(applied["environment"]["overrides"] == {"atlas-core": "1.0.0"}, "override was not applied")
+    require(applied["environment"]["resolved"]["atlas-core"] == "1.0.0", "override did not change resolved selection")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    env = api.request("GET", "/api/v1/environments/integration")
+    require(env["revision"] == 3 and env["overrides"] == {"atlas-core": "1.0.0"}, "environment override lost after restart")
 
 
 def main():

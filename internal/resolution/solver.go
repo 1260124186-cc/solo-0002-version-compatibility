@@ -13,10 +13,16 @@ type Solver struct {
 	MaxNodes int
 }
 
+type Request struct {
+	Roots     map[string]string
+	Overrides map[string]string
+}
+
 type search struct {
 	ctx       context.Context
 	catalog   map[string][]candidate
 	roots     map[string]semver.Constraint
+	overrides map[string]semver.Constraint
 	steps     int
 	maxSteps  int
 	maxNodes  int
@@ -24,7 +30,16 @@ type search struct {
 }
 
 func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[string]string) (domain.Resolution, error) {
+	return s.ResolveRequest(ctx, catalog, Request{Roots: roots})
+}
+
+func (s Solver) ResolveRequest(ctx context.Context, catalog domain.Catalog, request Request) (domain.Resolution, error) {
+	roots := request.Roots
+	overrides := request.Overrides
 	if err := domain.ValidateRequirements(roots, false); err != nil {
+		return domain.Resolution{}, err
+	}
+	if err := domain.ValidateOverrides(overrides, roots); err != nil {
 		return domain.Resolution{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -40,7 +55,14 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 	if s.MaxNodes <= 0 {
 		s.MaxNodes = 128
 	}
-	work := search{ctx: ctx, catalog: compiled, roots: make(map[string]semver.Constraint), maxSteps: s.MaxSteps, maxNodes: s.MaxNodes}
+	work := search{
+		ctx:       ctx,
+		catalog:   compiled,
+		roots:     make(map[string]semver.Constraint),
+		overrides: make(map[string]semver.Constraint),
+		maxSteps:  s.MaxSteps,
+		maxNodes:  s.MaxNodes,
+	}
 	for _, id := range domain.SortedKeys(roots) {
 		if _, exists := catalog.Components[id]; !exists {
 			return domain.Resolution{}, domain.Missing("component", id)
@@ -51,12 +73,38 @@ func (s Solver) Resolve(ctx context.Context, catalog domain.Catalog, roots map[s
 		}
 		work.roots[id] = constraint
 	}
+	for _, id := range domain.SortedKeys(overrides) {
+		if _, exists := catalog.Components[id]; !exists {
+			return domain.Resolution{}, domain.Missing("overridden component", id)
+		}
+		version, err := semver.Parse(overrides[id])
+		if err != nil {
+			return domain.Resolution{}, domain.Invalid("override for %s: %s", id, err)
+		}
+		work.overrides[id] = semver.Constraint{
+			Raw:        version.String(),
+			Predicates: []semver.Predicate{{Operator: "=", Version: version}},
+		}
+	}
 	selected, err := work.solve(make(map[string]candidate))
 	if err != nil {
 		return domain.Resolution{}, err
 	}
 	if selected == nil {
-		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints", Conflicts: work.conflicts}
+		return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints and overrides", Conflicts: work.conflicts}
+	}
+	for _, id := range domain.SortedKeys(overrides) {
+		if chosen, exists := selected[id]; !exists {
+			if len(work.conflicts) < 8 {
+				work.conflicts = append(work.conflicts, fmt.Sprintf("environment override requires %s %s, but no dependency path reaches that component", id, work.overrides[id].Raw))
+			}
+			return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints and overrides", Conflicts: work.conflicts}
+		} else if chosen.version.Compare(work.overrides[id].Predicates[0].Version) != 0 {
+			if len(work.conflicts) < 8 {
+				work.conflicts = append(work.conflicts, fmt.Sprintf("environment override requires %s %s", id, work.overrides[id].Raw))
+			}
+			return domain.Resolution{}, &domain.Fault{Code: "no_solution", Detail: "no compatible set satisfies the requested constraints and overrides", Conflicts: work.conflicts}
+		}
 	}
 	result := domain.Resolution{CatalogRevision: catalog.Revision, Resolved: make(map[string]string), Edges: make([]domain.Edge, 0), Steps: work.steps}
 	for _, id := range domain.SortedKeys(selected) {
@@ -127,6 +175,11 @@ func (s *search) requirements(selected map[string]candidate) map[string][]requir
 			needs[dep] = append(needs[dep], requirement{from: id + "@" + chosen.release.Version, constraint: chosen.dependencies[dep]})
 		}
 	}
+	for _, id := range domain.SortedKeys(s.overrides) {
+		if _, required := needs[id]; required {
+			needs[id] = append(needs[id], requirement{from: "environment override", constraint: s.overrides[id], override: true})
+		}
+	}
 	return needs
 }
 
@@ -134,20 +187,42 @@ func (s *search) explain(id string, needs []requirement) {
 	if len(s.conflicts) >= 8 {
 		return
 	}
-	for _, need := range needs {
-		item := fmt.Sprintf("%s requires %s %s", need.from, id, need.constraint.Raw)
-		found := false
-		for _, existing := range s.conflicts {
-			if existing == item {
-				found = true
-				break
+	override := findOverride(needs)
+	if override != nil {
+		for _, need := range needs {
+			if need.override {
+				continue
+			}
+			item := fmt.Sprintf("%s requires %s %s, but environment override requires %s %s", need.from, id, need.constraint.Raw, id, override.constraint.Raw)
+			s.addConflict(item)
+			if len(s.conflicts) >= 8 {
+				return
 			}
 		}
-		if !found {
-			s.conflicts = append(s.conflicts, item)
-		}
+		return
+	}
+	for _, need := range needs {
+		s.addConflict(fmt.Sprintf("%s requires %s %s", need.from, id, need.constraint.Raw))
 		if len(s.conflicts) >= 8 {
 			return
 		}
 	}
+}
+
+func findOverride(needs []requirement) *requirement {
+	for i := range needs {
+		if needs[i].override {
+			return &needs[i]
+		}
+	}
+	return nil
+}
+
+func (s *search) addConflict(item string) {
+	for _, existing := range s.conflicts {
+		if existing == item {
+			return
+		}
+	}
+	s.conflicts = append(s.conflicts, item)
 }

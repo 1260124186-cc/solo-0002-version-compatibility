@@ -32,24 +32,31 @@ curl -s http://127.0.0.1:8092/api/v1/components -H 'Content-Type: application/js
 curl -s http://127.0.0.1:8092/api/v1/components -H 'Content-Type: application/json' -d '{"id":"render-unit","name":"渲染单元"}'
 curl -s http://127.0.0.1:8092/api/v1/components/compute-core/releases -H 'Content-Type: application/json' -d '{"version":"1.0.0","requires":{}}'
 curl -s http://127.0.0.1:8092/api/v1/components/render-unit/releases -H 'Content-Type: application/json' -d '{"version":"1.0.0","requires":{"compute-core":"^1.0.0"}}'
-curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json' -d '{"roots":{"render-unit":"*"}}'
+curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json' -d '{"roots":{"render-unit":"*"},"overrides":{"compute-core":"1.0.0"}}'
 ```
 
-求解响应的 `resolved` 包含 `render-unit=1.0.0` 和 `compute-core=1.0.0`，`edges` 给出传递依赖边，`steps` 给出搜索步骤，`catalog_revision` 标记所用目录版本。求解只计算结果，不改变任何环境。
+求解响应的 `resolved` 包含 `render-unit=1.0.0` 和 `compute-core=1.0.0`，`edges` 给出传递依赖边，`steps` 给出搜索步骤，`catalog_revision` 标记所用目录版本。求解只计算结果，不改变任何环境。请求可带 `overrides`，例如 `{"atlas-core":"1.0.0"}`；每个值必须是精确稳定版本，且键不能出现在 `roots` 中。覆盖只在该组件能由根或传递依赖到达时生效，不会把未被引用的组件强行加入结果。
 
 创建环境：
 
 ```sh
-curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/json' -d '{"id":"staging","name":"预演环境","roots":{"render-unit":"1.0.0"}}'
+curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/json' -d '{"id":"staging","name":"预演环境","roots":{"render-unit":"1.0.0"},"overrides":{"compute-core":"1.0.0"}}'
 ```
 
-新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots` 及 `reason`。返回的方案最初为 `draft`、`revision=1`。依次调用：
+新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots`、完整的新 `overrides` 及 `reason`。根依赖和覆盖都不是增量补丁：未列出的覆盖会在该方案中移除。返回的方案最初为 `draft`、`revision=1`。依次调用：
 
 1. `POST /api/v1/plans/{id}/validate`，发送 `{"revision":1}`。成功返回 `ready` 方案，其 `changes` 描述新增、移除、升级或降级；后续请求必须使用返回的新修订号。
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
 3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
+
+### 根依赖、覆盖与已安装版本
+
+- 根依赖和覆盖都是硬约束，但作用范围不同：根依赖决定环境入口并可使用范围；覆盖只能针对非根组件，并且值必须是精确版本，作用于该组件被依赖路径实际需要的选择。
+- 求解时先取所有根约束、父组件传递约束和覆盖约束的交集；覆盖不能放宽父组件要求。若精确版本不满足某个父组件约束，422 响应的 `conflicts` 会成对列出父约束与覆盖约束，例如 `render-engine@2.0.0 requires atlas-core ^2.0.0, but environment override requires atlas-core 1.0.0`。
+- “已安装版本优先保留”表示候选选择/最小变更偏好，优先级低于全部硬约束；当前基线没有单独的已安装偏好，确定性策略是在可满足约束的候选中按版本降序尝试。因此，已安装或较低版本不会使父约束失效；当覆盖只留下一个精确候选时，任何候选偏好都不能改变该组件，覆盖优先生效。
+- 覆盖随创建环境或方案一起持久化；方案应用时写入环境并使环境修订号递增。环境与应用方案、事件序号一起保留该内容，可据此追溯修订变化。启动校验、方案验证和应用都会重新确认选择结果等于覆盖版本且该版本可用。
 
 ## 接口索引
 
@@ -59,9 +66,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET /components/{id} | 获取组件详情 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
-| POST /resolve | 求解根依赖和传递依赖 |
+| POST /resolve | 求解根依赖、传递依赖和非根组件精确覆盖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
-| GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| GET /environments/{id} | 查看环境根依赖、覆盖、解析集合和修订号 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -76,7 +83,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - 仅支持稳定 `major.minor.patch`，每段最大 4294967295，无前导零。支持 `*`、精确版本、`>=`、`<=`、`>`、`<`、`^`、`~` 及空格分隔的交集。
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
-- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；每次求解最多 32 条覆盖、最多涉及 128 个组件。覆盖键不能是根组件，值必须是精确稳定版本。最多 200 个环境和 5000 个方案。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。

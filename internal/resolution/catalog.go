@@ -17,6 +17,7 @@ type candidate struct {
 type requirement struct {
 	from       string
 	constraint semver.Constraint
+	override   bool
 }
 
 func compile(ctx context.Context, c domain.Catalog) (map[string][]candidate, error) {

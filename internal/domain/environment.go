@@ -6,6 +6,7 @@ type Environment struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
 	Roots     map[string]string `json:"roots"`
+	Overrides map[string]string `json:"overrides"`
 	Resolved  map[string]string `json:"resolved"`
 	Revision  uint64            `json:"revision"`
 	CreatedAt time.Time         `json:"created_at"`
@@ -13,13 +14,15 @@ type Environment struct {
 }
 
 type EnvironmentInput struct {
-	ID    string            `json:"id"`
-	Name  string            `json:"name"`
-	Roots map[string]string `json:"roots"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Roots     map[string]string `json:"roots"`
+	Overrides map[string]string `json:"overrides"`
 }
 
 type ResolutionInput struct {
-	Roots map[string]string `json:"roots"`
+	Roots     map[string]string `json:"roots"`
+	Overrides map[string]string `json:"overrides"`
 }
 
 type Edge struct {

@@ -5,6 +5,7 @@ import (
 
 	"solo-0002-version-compatibility/internal/domain"
 	"solo-0002-version-compatibility/internal/repository"
+	"solo-0002-version-compatibility/internal/resolution"
 )
 
 func (s *Service) CreateEnvironment(ctx context.Context, input domain.EnvironmentInput) (domain.Environment, error) {
@@ -14,6 +15,9 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 	if err := domain.ValidateText(input.Name, "name", 1, 120); err != nil {
 		return domain.Environment{}, err
 	}
+	if err := domain.ValidateOverrides(input.Overrides, input.Roots); err != nil {
+		return domain.Environment{}, err
+	}
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {
 		return domain.Environment{}, err
@@ -21,12 +25,21 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 	if _, exists := state.Environments[input.ID]; exists {
 		return domain.Environment{}, domain.Conflict("environment already exists")
 	}
-	resolved, err := s.solver.Resolve(ctx, state.Catalog, input.Roots)
+	resolved, err := s.solver.ResolveRequest(ctx, state.Catalog, resolution.Request{Roots: input.Roots, Overrides: input.Overrides})
 	if err != nil {
 		return domain.Environment{}, err
 	}
 	at := now()
-	env := domain.Environment{ID: input.ID, Name: input.Name, Roots: domain.CopyStrings(input.Roots), Resolved: resolved.Resolved, Revision: 1, CreatedAt: at, UpdatedAt: at}
+	env := domain.Environment{
+		ID:        input.ID,
+		Name:      input.Name,
+		Roots:     domain.CopyStrings(input.Roots),
+		Overrides: domain.CopyStrings(input.Overrides),
+		Resolved:  resolved.Resolved,
+		Revision:  1,
+		CreatedAt: at,
+		UpdatedAt: at,
+	}
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		if err := checkCatalog(resolved.CatalogRevision, current); err != nil {
 			return err
