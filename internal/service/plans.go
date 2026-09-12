@@ -48,6 +48,53 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 	return plan, err
 }
 
+// RebasePlan re-prepares a draft or ready plan against the caller-confirmed
+// current environment revision. The plan keeps its identity, expected roots
+// and reason; the prior resolution and diff are discarded and the plan returns
+// to draft, so it must be validated again before it can be applied. Neither
+// the plan revision nor the environment revision may have changed since the
+// caller read them, and the environment content itself is never modified.
+func (s *Service) RebasePlan(ctx context.Context, id string, input domain.RebaseInput) (domain.Plan, error) {
+	if input.Revision == 0 {
+		return domain.Plan{}, domain.Invalid("revision must be positive")
+	}
+	if input.BaseRevision == 0 {
+		return domain.Plan{}, domain.Invalid("base_revision must be positive")
+	}
+	var result domain.Plan
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		plan, exists := state.Plans[id]
+		if !exists {
+			return domain.Missing("plan", id)
+		}
+		if err := plan.CheckRevision(input.Revision); err != nil {
+			return err
+		}
+		if err := plan.CanRebase(); err != nil {
+			return err
+		}
+		env, exists := state.Environments[plan.EnvironmentID]
+		if !exists {
+			return domain.Missing("environment", plan.EnvironmentID)
+		}
+		if env.Revision != input.BaseRevision {
+			return domain.Conflict("environment revision is %d, received %d", env.Revision, input.BaseRevision)
+		}
+		plan.BaseRevision = input.BaseRevision
+		plan.CatalogRevision = 0
+		plan.Resolved = make(map[string]string)
+		plan.Changes = make([]domain.Change, 0)
+		plan.State = domain.Draft
+		plan.Revision++
+		plan.UpdatedAt = now()
+		state.Plans[id] = plan
+		state.Record("plan", id, "rebased", plan.UpdatedAt)
+		result = plan
+		return nil
+	})
+	return result, err
+}
+
 func (s *Service) Plan(ctx context.Context, id string) (domain.Plan, error) {
 	state, err := s.repo.Snapshot(ctx)
 	if err != nil {

@@ -49,7 +49,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
 3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
 
-根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
+若环境先应用了其他方案，原方案的基础修订随之过期、旧的解析结果与差异不再适用。可对 draft 或 ready 方案调用 `POST /api/v1/plans/{id}/rebase`，请求 `{"revision":<方案修订号>,"base_revision":<当前环境修订号>}`。操作保留方案标识、期望根依赖与原因，将基础环境修订更新为调用方确认的当前修订，并丢弃旧的解析结果和差异；方案回到 `draft`、方案修订号递增，必须重新验证成功后才能应用。方案修订号或环境修订号任一方与服务当前状态不符都返回 409；已 applied 或 cancelled 的方案不可重设，重设过程也不改变环境内容。
+
+根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，可基于当前环境修订重设未完成方案，或使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
 ## 接口索引
 
@@ -67,6 +69,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
+| POST /plans/{id}/rebase | 携带方案与当前环境修订号，将方案重设到当前环境修订并回到 draft |
 | GET /events | 按序号增量读取变更事件 |
 
 集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。

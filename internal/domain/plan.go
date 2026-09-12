@@ -42,9 +42,23 @@ type RevisionInput struct {
 	Revision uint64 `json:"revision"`
 }
 
+type RebaseInput struct {
+	Revision     uint64 `json:"revision"`
+	BaseRevision uint64 `json:"base_revision"`
+}
+
 func (p Plan) CanValidate() error {
 	if p.State != Draft && p.State != Ready {
 		return Conflict("cannot validate a %s plan", p.State)
+	}
+	return nil
+}
+
+// CanRebase allows re-preparing a draft or ready plan against the current
+// environment revision; applied and cancelled plans stay immutable.
+func (p Plan) CanRebase() error {
+	if p.State != Draft && p.State != Ready {
+		return Conflict("cannot rebase a %s plan", p.State)
 	}
 	return nil
 }

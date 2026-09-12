@@ -156,13 +156,40 @@ def upgrade(api):
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
     other = "/api/v1/plans/" + second["id"]
     api.request("POST", other + "/validate", {"revision": 1}, 409)
+
+    rebase_body = {"environment_id": "integration", "base_revision": 2, "roots": {"render-engine": "2.0.0"}, "reason": "环境先应用了其他方案"}
+    third = api.request("POST", "/api/v1/plans", rebase_body, 201)
+    redraft = "/api/v1/plans/" + third["id"]
+    ready_again = api.request("POST", redraft + "/validate", {"revision": 1})
+    require(ready_again["state"] == "ready", "third plan did not become ready")
+    api.request("POST", redraft + "/validate", {"revision": 1}, 409)
+    api.request("POST", redraft + "/rebase", {"revision": 1, "base_revision": 2}, 409)
+    api.request("POST", redraft + "/rebase", {"revision": ready_again["revision"], "base_revision": 1}, 409)
+    rebased = api.request("POST", redraft + "/rebase",
+                          {"revision": ready_again["revision"], "base_revision": 2})
+    require(rebased["state"] == "draft", "rebased plan did not return to draft")
+    require(rebased["base_revision"] == 2 and not rebased["changes"] and not rebased["resolved"],
+            "rebased plan kept stale resolution data")
+    require(rebased["roots"] == {"render-engine": "2.0.0"} and rebased["reason"] == "环境先应用了其他方案",
+            "rebased plan lost its roots or reason")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "rebase mutated environment")
+    api.request("POST", redraft + "/apply", {"revision": rebased["revision"]}, 409)
+    ready_again = api.request("POST", redraft + "/validate", {"revision": rebased["revision"]})
+    require(ready_again["state"] == "ready" and not ready_again["changes"], "re-validation after rebase failed")
+    api.request("POST", redraft + "/rebase", {"revision": ready_again["revision"], "base_revision": 2})
+    api.request("POST", redraft + "/rebase", {"revision": 0, "base_revision": 2}, 400)
+    api.request("POST", "/api/v1/plans/plan-missing/rebase", {"revision": 1, "base_revision": 2}, 404)
+
+    api.request("POST", path + "/rebase", {"revision": applied["plan"]["revision"], "base_revision": 2}, 409)
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
+    api.request("POST", other + "/rebase", {"revision": cancelled["revision"], "base_revision": 2}, 409)
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", redraft)["state"] == "draft", "rebased state lost after restart")
 
 
 def main():

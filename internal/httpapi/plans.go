@@ -91,6 +91,20 @@ func (a *API) cancelPlan(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, result)
 }
 
+func (a *API) rebasePlan(w http.ResponseWriter, r *http.Request) {
+	var input domain.RebaseInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.RebasePlan(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
 func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	if err := queryOnly(r, "after", "limit", "entity_id"); err != nil {
 		fail(w, err)
