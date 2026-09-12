@@ -43,7 +43,7 @@ curl -s http://127.0.0.1:8092/api/v1/resolve -H 'Content-Type: application/json'
 curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/json' -d '{"id":"staging","name":"预演环境","roots":{"render-unit":"1.0.0"}}'
 ```
 
-新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots` 及 `reason`。返回的方案最初为 `draft`、`revision=1`。依次调用：
+新增组件版本后，提交 `POST /api/v1/plans`，请求包含 `environment_id`、当前环境的 `base_revision`、完整的新 `roots` 及 `reason`。返回的方案最初为 `draft`、`revision=1`。草稿阶段可提交 `POST /api/v1/plans/{id}/edit`，携带当前方案 `revision` 以及完整的新 `roots` 与 `reason` 原位修改；输入校验（组件引用与约束语法）通过且修订号匹配时保存并递增修订号，任何失败都保留原草稿。ready、applied、cancelled 方案不能编辑。随后依次调用：
 
 1. `POST /api/v1/plans/{id}/validate`，发送 `{"revision":1}`。成功返回 `ready` 方案，其 `changes` 描述新增、移除、升级或降级；后续请求必须使用返回的新修订号。
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
@@ -64,6 +64,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
+| POST /plans/{id}/edit | 携带修订号原位修改草稿方案的根依赖与原因 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
@@ -96,7 +97,7 @@ python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、草稿编辑、方案验证、目录过期、环境过期、应用及取消。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

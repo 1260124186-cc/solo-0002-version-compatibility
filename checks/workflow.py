@@ -145,8 +145,18 @@ def upgrade(api):
     first = api.request("POST", "/api/v1/plans", body, 201)
     second = api.request("POST", "/api/v1/plans", body, 201)
     path = "/api/v1/plans/" + first["id"]
+    other = "/api/v1/plans/" + second["id"]
+    edited = api.request("POST", other + "/edit", {"revision": 1, "roots": {"render-engine": "2.0.0", "panel-shell": "1.0.0"}, "reason": "补充面板壳层"})
+    require(edited["state"] == "draft" and edited["revision"] == 2, "draft edit did not increment revision")
+    require(edited["roots"] == {"render-engine": "2.0.0", "panel-shell": "1.0.0"} and edited["reason"] == "补充面板壳层", "draft edit did not store new content")
+    api.request("POST", other + "/edit", {"revision": 2, "roots": {"render-engine": "1.0"}, "reason": "约束语法错误"}, 400)
+    api.request("POST", other + "/edit", {"revision": 2, "roots": {"missing-core": "*"}, "reason": "未知组件"}, 404)
+    api.request("POST", other + "/edit", {"revision": 1, "roots": {"render-engine": "*"}, "reason": "旧修订号"}, 409)
+    kept = api.request("GET", other)
+    require(kept["revision"] == 2 and kept["roots"] == edited["roots"] and kept["reason"] == "补充面板壳层", "failed edit altered the draft")
     ready = api.request("POST", path + "/validate", {"revision": 1})
     require(ready["state"] == "ready" and len(ready["changes"]) == 2, "plan validation did not generate expected changes")
+    api.request("POST", path + "/edit", {"revision": ready["revision"], "roots": {"render-engine": "*"}, "reason": "就绪后编辑"}, 409)
     release(api, "atlas-core", "3.0.0")
     api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1, "stale plan mutated environment")
@@ -154,15 +164,25 @@ def upgrade(api):
     applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
     require(applied["environment"]["revision"] == 2 and applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "plan application failed")
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
-    other = "/api/v1/plans/" + second["id"]
-    api.request("POST", other + "/validate", {"revision": 1}, 409)
-    cancelled = api.request("POST", other + "/cancel", {"revision": 1})
+    api.request("POST", path + "/edit", {"revision": applied["plan"]["revision"], "roots": {"render-engine": "*"}, "reason": "应用后编辑"}, 409)
+    api.request("POST", other + "/validate", {"revision": 2}, 409)
+    cancelled = api.request("POST", other + "/cancel", {"revision": 2})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
+    api.request("POST", other + "/edit", {"revision": cancelled["revision"], "roots": {"render-engine": "*"}, "reason": "取消后编辑"}, 409)
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    third = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 2, "roots": {"panel-shell": "1.0.0"}, "reason": "初始草稿"}, 201)
+    third_path = "/api/v1/plans/" + third["id"]
+    edited = api.request("POST", third_path + "/edit", {"revision": 1, "roots": {"panel-shell": "*"}, "reason": "放宽面板壳层约束"})
+    ready = api.request("POST", third_path + "/validate", {"revision": edited["revision"]})
+    require(ready["state"] == "ready" and ready["roots"] == {"panel-shell": "*"}, "edited draft did not validate")
+    applied = api.request("POST", third_path + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 3 and applied["environment"]["resolved"]["panel-shell"] == "1.0.0", "edited draft did not apply")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 3, "environment revision lost after restart")
+    restarted = api.request("GET", other)
+    require(restarted["revision"] == 3 and restarted["roots"] == {"render-engine": "2.0.0", "panel-shell": "1.0.0"} and restarted["reason"] == "补充面板壳层", "edited draft content lost after restart")
 
 
 def main():

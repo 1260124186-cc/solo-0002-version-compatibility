@@ -60,6 +60,44 @@ func (s *Service) Plan(ctx context.Context, id string) (domain.Plan, error) {
 	return plan, nil
 }
 
+// EditPlan replaces a draft's roots and reason in place. Any failure leaves
+// the stored plan untouched because the repository commits only on success.
+func (s *Service) EditPlan(ctx context.Context, id string, input domain.PlanEditInput) (domain.Plan, error) {
+	if err := domain.ValidateRequirements(input.Roots, false); err != nil {
+		return domain.Plan{}, err
+	}
+	if err := domain.ValidateText(input.Reason, "reason", 1, 1000); err != nil {
+		return domain.Plan{}, err
+	}
+	var updated domain.Plan
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		plan, exists := state.Plans[id]
+		if !exists {
+			return domain.Missing("plan", id)
+		}
+		if err := plan.CheckRevision(input.Revision); err != nil {
+			return err
+		}
+		if err := plan.CanEdit(); err != nil {
+			return err
+		}
+		for _, component := range domain.SortedKeys(input.Roots) {
+			if _, exists := state.Catalog.Components[component]; !exists {
+				return domain.Missing("component", component)
+			}
+		}
+		plan.Roots = domain.CopyStrings(input.Roots)
+		plan.Reason = input.Reason
+		plan.Revision++
+		plan.UpdatedAt = now()
+		state.Plans[id] = plan
+		state.Record("plan", id, "edited", plan.UpdatedAt)
+		updated = plan
+		return nil
+	})
+	return updated, err
+}
+
 func (s *Service) ListPlans(ctx context.Context, environmentID, phase string) ([]domain.Plan, error) {
 	if phase != "" && phase != domain.Draft && phase != domain.Ready && phase != domain.Applied && phase != domain.Cancelled {
 		return nil, domain.Invalid("unknown plan state")

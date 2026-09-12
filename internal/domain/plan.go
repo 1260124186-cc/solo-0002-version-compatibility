@@ -38,8 +38,21 @@ type PlanInput struct {
 	Reason        string            `json:"reason"`
 }
 
+type PlanEditInput struct {
+	Revision uint64            `json:"revision"`
+	Roots    map[string]string `json:"roots"`
+	Reason   string            `json:"reason"`
+}
+
 type RevisionInput struct {
 	Revision uint64 `json:"revision"`
+}
+
+func (p Plan) CanEdit() error {
+	if p.State != Draft {
+		return Conflict("cannot edit a %s plan", p.State)
+	}
+	return nil
 }
 
 func (p Plan) CanValidate() error {
