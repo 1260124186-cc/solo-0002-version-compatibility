@@ -110,15 +110,40 @@ def catalog(api):
     api.request("POST", "/api/v1/components", expected=400,
                 raw=b'{"id":"ab","id":"cd","name":"duplicate"}')
     api.request("POST", "/api/v1/components", {"id": "ab", "name": "x", "unexpected": 1}, 400)
-    result = api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {})
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {}, 400)
+    result = api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw",
+                         {"reason": "发现兼容性回归"})
     require(result["state"] == "withdrawn", "release did not become withdrawn")
+    require(result["withdrawal_reason"] == "发现兼容性回归", "withdrawal reason missing from release")
+    withdrawal_events = [event for event in api.request("GET", "/api/v1/events")["items"] if event["action"] == "withdrawn"]
+    require(withdrawal_events[-1]["reason"] == "发现兼容性回归", "withdrawal reason missing from event")
+    corrected = api.request(
+        "POST", "/api/v1/components/atlas-core/releases/1.0.0/withdrawal-reason-corrections",
+        {"reason": "更正：发现与渲染组件的兼容性回归"}, 201)
+    require(corrected["withdrawal_reason"] == "发现兼容性回归", "correction overwrote original reason")
+    require(corrected["withdrawal_reason_corrections"][0]["reason"] == "更正：发现与渲染组件的兼容性回归", "correction missing from release")
+    events = api.request("GET", "/api/v1/events")["items"]
+    withdrawal_event = [event for event in events if event["action"] == "withdrawn"][0]
+    correction_event = [event for event in events if event["action"] == "withdrawal_reason_corrected"][0]
+    require(correction_event["corrects_event_sequence"] == withdrawal_event["sequence"], "correction does not point to original withdrawal")
+    require(withdrawal_event["sequence"] == result["withdrawal_event_sequence"], "release does not identify withdrawal event")
+    require(corrected["withdrawal_reason_corrections"][0]["event_sequence"] == correction_event["sequence"], "release correction does not identify correction event")
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw",
+                {"reason": "重复撤回"}, 409)
+    api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdrawal-reason-corrections",
+                {"reason": "更正未撤回版本"}, 409)
+    api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdrawal-reason-corrections",
+                {"reason": "   "}, 400)
     api.request("POST", "/api/v1/resolve", {"roots": {"atlas-core": "*"}}, 422)
     api.stop()
     api.start()
     result = api.request("GET", "/api/v1/components/atlas-core/releases")
     require(len(result["items"]) == 1 and result["items"][0]["state"] == "withdrawn", "durable version state changed after restart")
+    require(result["items"][0]["withdrawal_reason"] == "发现兼容性回归", "original withdrawal reason lost after restart")
+    require(result["items"][0]["withdrawal_reason_corrections"][0]["corrects_sequence"] == result["items"][0]["withdrawal_event_sequence"], "durable correction points to wrong withdrawal")
     events = api.request("GET", "/api/v1/events")["items"]
-    require([event["action"] for event in events] == ["created", "added", "withdrawn"], "failed writes altered events")
+    require([event["action"] for event in events] == ["created", "added", "withdrawn", "withdrawal_reason_corrected"], "failed writes altered events")
+    require(events[2]["reason"] == "发现兼容性回归" and events[3]["reason"] == "更正：发现与渲染组件的兼容性回归" and events[3]["corrects_event_sequence"] == events[2]["sequence"], "events lost withdrawal reasons")
 
 
 def resolve(api):
@@ -158,7 +183,8 @@ def upgrade(api):
     api.request("POST", other + "/validate", {"revision": 1}, 409)
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
-    api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw",
+                {"reason": "尝试撤回环境正在使用的版本"}, 409)
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")

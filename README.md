@@ -51,6 +51,28 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+撤回版本时请求体必须包含 1–1000 字符的 `reason`，例如：
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/components/render-unit/releases/1.0.0/withdraw \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"该版本存在已确认的兼容性回归"}'
+```
+
+撤回成功会在同一次原子提交中完成两件事：把版本状态、撤回时间、原始撤回原因和 `withdrawal_event_sequence` 写入版本；同时追加一条 `withdrawn` 事件，事件包含相同原因。二者随目录修订号一并持久化，因此目录修订号递增，基于旧目录的 ready 方案必须重新验证。版本响应包含状态和原因：
+
+```json
+{
+  "state": "withdrawn",
+  "withdrawal_reason": "该版本存在已确认的兼容性回归",
+  "withdrawal_event_sequence": 3
+}
+```
+
+`GET /api/v1/events` 可看到对应的 `withdrawn` 事件及事件中的 `reason`。
+
+撤回原因一旦提交不可修改。需要更正时，向 `/components/{id}/releases/{version}/withdrawal-reason-corrections` 提交新的 `reason`；服务追加 `withdrawal_reason_corrected` 事件，并用 `corrects_event_sequence` 明确指向原撤回事件。版本记录中的 `withdrawal_reason_corrections` 保存更正时间、原因、更正事件序号及原撤回事件序号，原始原因和事件均保留不变。更正也会递增目录修订号，但不会改变版本的撤回状态。环境正在使用的版本不能撤回；撤回时若已被环境引用会返回 409，且不会写入撤回原因或事件。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -58,7 +80,8 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET、POST /components | 分页查询、创建组件 |
 | GET /components/{id} | 获取组件详情 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
-| POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
+| POST /components/{id}/releases/{version}/withdraw | 提交必填撤回原因，撤回未使用版本 |
+| POST /components/{id}/releases/{version}/withdrawal-reason-corrections | 追加一条指向原撤回事件的原因更正 |
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
@@ -69,7 +92,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
 | GET /events | 按序号增量读取变更事件 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。撤回事件的 `reason` 保存原始撤回原因；原因更正事件的 `reason` 保存更正文本，`corrects_event_sequence` 指向原撤回事件。
 
 ## 约束及失败行为
 
@@ -96,7 +119,7 @@ python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、必填撤回原因、不可覆盖的撤回原因更正、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
@@ -112,4 +135,4 @@ python3 checks/workflow.py upgrade
 - `internal/config`：环境配置。
 - `checks`：公开 HTTP 运行检查。
 
-当前不提供网页界面、第三方组件源接入、多实例共享数据、方案清理接口或预发行版本支持。版本内容不可修改，撤回不可逆；采用新的版本号修订依赖。
+当前不提供网页界面、第三方组件源接入、多实例共享数据、方案清理接口或预发行版本支持。版本内容不可修改，撤回不可逆；撤回原因也不可覆盖，只能追加指向原撤回事件的更正记录。采用新的版本号修订依赖。

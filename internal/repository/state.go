@@ -8,11 +8,13 @@ import (
 )
 
 type Event struct {
-	Sequence uint64    `json:"sequence"`
-	Kind     string    `json:"kind"`
-	EntityID string    `json:"entity_id"`
-	Action   string    `json:"action"`
-	At       time.Time `json:"at"`
+	Sequence              uint64    `json:"sequence"`
+	Kind                  string    `json:"kind"`
+	EntityID              string    `json:"entity_id"`
+	Action                string    `json:"action"`
+	At                    time.Time `json:"at"`
+	Reason                string    `json:"reason,omitempty"`
+	CorrectsEventSequence uint64    `json:"corrects_event_sequence,omitempty"`
 }
 
 type State struct {
@@ -51,14 +53,13 @@ func (s *State) Clone() (*State, error) {
 }
 
 func (s *State) Record(kind, id, action string, at time.Time) {
+	s.RecordEvent(Event{Kind: kind, EntityID: id, Action: action, At: at})
+}
+
+func (s *State) RecordEvent(event Event) {
 	s.Revision++
-	s.Events = append(s.Events, Event{
-		Sequence: s.Revision,
-		Kind:     kind,
-		EntityID: id,
-		Action:   action,
-		At:       at,
-	})
+	event.Sequence = s.Revision
+	s.Events = append(s.Events, event)
 	if len(s.Events) > 10000 {
 		s.Events = s.Events[len(s.Events)-10000:]
 	}

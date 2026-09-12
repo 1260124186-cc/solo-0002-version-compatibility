@@ -83,17 +83,31 @@ func (a *API) releases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) withdraw(w http.ResponseWriter, r *http.Request) {
-	var input struct{}
+	var input domain.WithdrawReleaseInput
 	if err := decode(w, r, &input); err != nil {
 		fail(w, err)
 		return
 	}
-	result, err := a.service.WithdrawRelease(r.Context(), r.PathValue("id"), r.PathValue("version"))
+	result, err := a.service.WithdrawRelease(r.Context(), r.PathValue("id"), r.PathValue("version"), input)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	respond(w, http.StatusOK, result)
+}
+
+func (a *API) correctWithdrawalReason(w http.ResponseWriter, r *http.Request) {
+	var input domain.CorrectWithdrawalReasonInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.CorrectWithdrawalReason(r.Context(), r.PathValue("id"), r.PathValue("version"), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusCreated, result)
 }
 
 func (a *API) resolve(w http.ResponseWriter, r *http.Request) {

@@ -17,6 +17,20 @@ func validateState(s *State) error {
 	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Events) > 10000 {
 		return fmt.Errorf("persisted collection exceeds capacity")
 	}
+	withdrawalEvents := make(map[uint64]Event)
+	correctionEvents := make(map[uint64]Event)
+	var firstEventSequence uint64
+	for _, event := range s.Events {
+		if firstEventSequence == 0 {
+			firstEventSequence = event.Sequence
+		}
+		switch {
+		case event.Kind == "release" && event.Action == "withdrawn":
+			withdrawalEvents[event.Sequence] = event
+		case event.Kind == "release" && event.Action == "withdrawal_reason_corrected":
+			correctionEvents[event.Sequence] = event
+		}
+	}
 	for id, component := range s.Catalog.Components {
 		if s.Catalog.Releases[id] == nil {
 			return fmt.Errorf("component is missing its release collection")
@@ -48,11 +62,104 @@ func validateState(s *State) error {
 			if (release.State == domain.Withdrawn) != (release.WithdrawnAt != nil) {
 				return fmt.Errorf("invalid withdrawal timestamp")
 			}
+			if release.WithdrawnAt != nil && release.WithdrawnAt.IsZero() {
+				return fmt.Errorf("invalid withdrawal timestamp")
+			}
+			if release.State == domain.Withdrawn {
+				if release.WithdrawalEventSequence == 0 {
+					return fmt.Errorf("withdrawn release is missing its withdrawal event")
+				}
+				if release.WithdrawalEventSequence > s.Revision {
+					return fmt.Errorf("withdrawn release references a future event")
+				}
+				if firstEventSequence != 0 && release.WithdrawalEventSequence >= firstEventSequence {
+					if _, exists := withdrawalEvents[release.WithdrawalEventSequence]; !exists {
+						return fmt.Errorf("missing withdrawal event for retained sequence")
+					}
+				}
+				if err := domain.ValidateWithdrawalReason(release.WithdrawalReason); err != nil {
+					return err
+				}
+				seenCorrections := make(map[uint64]bool)
+				previousCorrectionSequence := release.WithdrawalEventSequence
+				for _, correction := range release.WithdrawalReasonCorrections {
+					if err := domain.ValidateWithdrawalReason(correction.Reason); err != nil {
+						return err
+					}
+					if correction.CorrectsSequence != release.WithdrawalEventSequence || correction.EventSequence <= previousCorrectionSequence {
+						return fmt.Errorf("withdrawal correction points to an invalid withdrawal")
+					}
+					previousCorrectionSequence = correction.EventSequence
+					if correction.EventSequence > s.Revision {
+						return fmt.Errorf("withdrawal correction references a future event")
+					}
+					if firstEventSequence != 0 && correction.EventSequence >= firstEventSequence {
+						if _, exists := correctionEvents[correction.EventSequence]; !exists {
+							return fmt.Errorf("missing withdrawal reason correction event")
+						}
+					}
+					if correction.At.IsZero() {
+						return fmt.Errorf("withdrawal correction is missing its timestamp")
+					}
+					if seenCorrections[correction.EventSequence] {
+						return fmt.Errorf("duplicate withdrawal reason correction")
+					}
+					seenCorrections[correction.EventSequence] = true
+					correctionEvent, exists := correctionEvents[correction.EventSequence]
+					if exists && (correctionEvent.EntityID != release.ComponentID+"@"+release.Version ||
+						correctionEvent.CorrectsEventSequence != release.WithdrawalEventSequence ||
+						correctionEvent.Reason != correction.Reason ||
+						!correctionEvent.At.Equal(correction.At)) {
+						return fmt.Errorf("withdrawal reason correction does not match its event")
+					}
+				}
+			} else if release.WithdrawalEventSequence != 0 || release.WithdrawalReason != "" || len(release.WithdrawalReasonCorrections) != 0 {
+				return fmt.Errorf("available release has withdrawal metadata")
+			}
 			for dep := range release.Requires {
 				if _, ok := s.Catalog.Components[dep]; !ok {
 					return fmt.Errorf("unknown dependency %s", dep)
 				}
 			}
+		}
+	}
+	referencedWithdrawals := make(map[uint64]bool)
+	referencedCorrections := make(map[uint64]bool)
+	for _, releases := range s.Catalog.Releases {
+		for _, release := range releases {
+			if release.State != domain.Withdrawn {
+				continue
+			}
+			entityID := release.ComponentID + "@" + release.Version
+			if referencedWithdrawals[release.WithdrawalEventSequence] {
+				return fmt.Errorf("withdrawal event referenced by multiple releases")
+			}
+			referencedWithdrawals[release.WithdrawalEventSequence] = true
+			event, exists := withdrawalEvents[release.WithdrawalEventSequence]
+			if exists {
+				if event.EntityID != entityID || event.Reason != release.WithdrawalReason || !event.At.Equal(*release.WithdrawnAt) {
+					return fmt.Errorf("withdrawal event does not match %s", entityID)
+				}
+				if event.CorrectsEventSequence != 0 {
+					return fmt.Errorf("withdrawal event cannot correct another event")
+				}
+			}
+			for _, correction := range release.WithdrawalReasonCorrections {
+				if referencedCorrections[correction.EventSequence] {
+					return fmt.Errorf("correction event referenced by multiple releases")
+				}
+				referencedCorrections[correction.EventSequence] = true
+			}
+		}
+	}
+	for sequence := range withdrawalEvents {
+		if !referencedWithdrawals[sequence] {
+			return fmt.Errorf("withdrawal event is not attached to a withdrawn release")
+		}
+	}
+	for sequence := range correctionEvents {
+		if !referencedCorrections[sequence] {
+			return fmt.Errorf("withdrawal correction event is not attached to a release")
 		}
 	}
 	for id, env := range s.Environments {
@@ -94,6 +201,29 @@ func validateState(s *State) error {
 	for i, event := range s.Events {
 		if event.Sequence == 0 || event.Sequence > s.Revision || (i > 0 && event.Sequence != previous+1) {
 			return fmt.Errorf("invalid event sequence")
+		}
+		if event.Kind == "release" && event.Action == "withdrawn" {
+			if err := domain.ValidateWithdrawalReason(event.Reason); err != nil || event.CorrectsEventSequence != 0 {
+				return fmt.Errorf("invalid withdrawal event payload")
+			}
+		} else if event.Kind == "release" && event.Action == "withdrawal_reason_corrected" {
+			if err := domain.ValidateWithdrawalReason(event.Reason); err != nil {
+				return err
+			}
+			if event.CorrectsEventSequence == 0 || event.CorrectsEventSequence >= event.Sequence {
+				return fmt.Errorf("withdrawal correction points to an invalid event")
+			}
+			if firstEventSequence != 0 && event.CorrectsEventSequence >= firstEventSequence {
+				original, exists := withdrawalEvents[event.CorrectsEventSequence]
+				if !exists {
+					return fmt.Errorf("withdrawal correction points to a non-withdrawal event")
+				}
+				if original.EntityID != event.EntityID {
+					return fmt.Errorf("withdrawal correction changes release identity")
+				}
+			}
+		} else if event.Reason != "" || event.CorrectsEventSequence != 0 {
+			return fmt.Errorf("event contains unsupported withdrawal metadata")
 		}
 		previous = event.Sequence
 	}

@@ -103,12 +103,17 @@ func (s *Service) ListReleases(ctx context.Context, id string) ([]domain.Release
 	return items, nil
 }
 
-func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (domain.Release, error) {
+func releaseEntityID(id, version string) string { return id + "@" + version }
+
+func (s *Service) WithdrawRelease(ctx context.Context, id, version string, input domain.WithdrawReleaseInput) (domain.Release, error) {
+	if err := domain.ValidateWithdrawalReason(input.Reason); err != nil {
+		return domain.Release{}, err
+	}
 	var result domain.Release
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		release, exists := state.Catalog.Releases[id][version]
 		if !exists {
-			return domain.Missing("release", id+"@"+version)
+			return domain.Missing("release", releaseEntityID(id, version))
 		}
 		if release.State != domain.Available {
 			return domain.Conflict("release is already withdrawn")
@@ -119,11 +124,58 @@ func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (doma
 			}
 		}
 		at := now()
+		entityID := releaseEntityID(id, version)
+		event := repository.Event{
+			Kind:     "release",
+			EntityID: entityID,
+			Action:   "withdrawn",
+			At:       at,
+			Reason:   input.Reason,
+		}
+		state.Catalog.Revision++
+		state.RecordEvent(event)
 		release.State = domain.Withdrawn
 		release.WithdrawnAt = &at
+		release.WithdrawalReason = input.Reason
+		release.WithdrawalEventSequence = event.Sequence
 		state.Catalog.Releases[id][version] = release
+		result = release
+		return nil
+	})
+	return result, err
+}
+
+func (s *Service) CorrectWithdrawalReason(ctx context.Context, id, version string, input domain.CorrectWithdrawalReasonInput) (domain.Release, error) {
+	if err := domain.ValidateWithdrawalReason(input.Reason); err != nil {
+		return domain.Release{}, err
+	}
+	var result domain.Release
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		release, exists := state.Catalog.Releases[id][version]
+		if !exists {
+			return domain.Missing("release", releaseEntityID(id, version))
+		}
+		if release.State != domain.Withdrawn || release.WithdrawalEventSequence == 0 {
+			return domain.Conflict("release is not withdrawn")
+		}
+		at := now()
+		event := repository.Event{
+			Kind:                  "release",
+			EntityID:              releaseEntityID(id, version),
+			Action:                "withdrawal_reason_corrected",
+			At:                    at,
+			Reason:                input.Reason,
+			CorrectsEventSequence: release.WithdrawalEventSequence,
+		}
 		state.Catalog.Revision++
-		state.Record("release", id+"@"+version, "withdrawn", at)
+		state.RecordEvent(event)
+		release.WithdrawalReasonCorrections = append(release.WithdrawalReasonCorrections, domain.WithdrawalReasonCorrection{
+			Reason:           input.Reason,
+			At:               at,
+			EventSequence:    event.Sequence,
+			CorrectsSequence: release.WithdrawalEventSequence,
+		})
+		state.Catalog.Releases[id][version] = release
 		result = release
 		return nil
 	})

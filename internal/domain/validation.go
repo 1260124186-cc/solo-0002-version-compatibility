@@ -12,6 +12,12 @@ import (
 
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 
+const MaxWithdrawalReasonLength = 1000
+
+func ValidateWithdrawalReason(reason string) error {
+	return ValidateText(reason, "withdrawal reason", 1, MaxWithdrawalReasonLength)
+}
+
 func ValidateID(id string) error {
 	if !idPattern.MatchString(id) {
 		return Invalid("identifier must be 2–64 lowercase letters, digits or hyphens and start with a letter")
