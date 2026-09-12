@@ -56,16 +56,18 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 }
 
 func (s *Service) CancelPlan(ctx context.Context, id string, input domain.ReasonInput) (domain.Plan, error) {
-	if err := domain.ValidateReason(input.Reason); err != nil {
-		return domain.Plan{}, err
-	}
 	var result domain.Plan
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		plan, exists := state.Plans[id]
 		if !exists {
 			return domain.Missing("plan", id)
 		}
+		// A cancelled plan is terminal: report the conflict before looking
+		// at the reason, so repeated cancels always return 409.
 		if err := plan.CheckNotCancelled("cancel"); err != nil {
+			return err
+		}
+		if err := domain.ValidateReason(input.Reason); err != nil {
 			return err
 		}
 		if err := plan.CheckRevision(input.Revision); err != nil {

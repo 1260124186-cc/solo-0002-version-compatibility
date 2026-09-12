@@ -9,6 +9,10 @@ const (
 	Cancelled = "cancelled"
 )
 
+// LegacyCancelReason backfills cancelled plans persisted before cancel
+// reasons were required.
+const LegacyCancelReason = "cancelled before cancellation reasons were recorded"
+
 type Change struct {
 	ComponentID string `json:"component_id"`
 	From        string `json:"from,omitempty"`

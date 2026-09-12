@@ -7,6 +7,17 @@ import (
 	"solo-0002-version-compatibility/internal/semver"
 )
 
+// migrateLegacyState backfills cancelled plans persisted before cancel
+// reasons were required. Historical events are left untouched.
+func migrateLegacyState(s *State) {
+	for id, plan := range s.Plans {
+		if plan.State == domain.Cancelled && plan.CancelReason == "" {
+			plan.CancelReason = domain.LegacyCancelReason
+			s.Plans[id] = plan
+		}
+	}
+}
+
 func validateState(s *State) error {
 	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
 		return fmt.Errorf("unsupported schema or missing collections")

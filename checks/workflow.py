@@ -14,6 +14,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 
+LEGACY_REASON = "cancelled before cancellation reasons were recorded"
+
 
 class RunningService:
     def __init__(self, directory):
@@ -171,6 +173,9 @@ def upgrade(api):
                 payload["reason"] = "再次取消"
             result = api.request("POST", other + "/" + action, payload, 409)
             require(result["error"]["code"] == "conflict", "cancelled plan did not return a stable conflict")
+    for payload in ({"revision": cancelled["revision"]}, {"revision": cancelled["revision"], "reason": "  "}):
+        result = api.request("POST", other + "/cancel", payload, 409)
+        require(result["error"]["code"] == "conflict", "repeated cancel did not return a conflict without a valid reason")
     api.request("POST", other + "/correct", {"revision": cancelled["revision"]}, 400)
     api.request("POST", other + "/correct", {"revision": 1, "reason": "旧修订号"}, 409)
     api.request("POST", path + "/correct", {"revision": applied["plan"]["revision"], "reason": "不应更正"}, 409)
@@ -186,6 +191,27 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
     restored = api.request("GET", other)
     require(restored["cancel_reason"] == "需求变更，放弃本次升级" and len(restored["corrections"]) == 1, "cancel reason did not persist with the plan")
+    api.stop()
+    state_file = Path(api.directory) / "state" / "state.json"
+    data = json.loads(state_file.read_text())
+    del data["plans"][second["id"]]["cancel_reason"]
+    for event in data["events"]:
+        if event["entity_id"] == second["id"] and event["action"] == "cancelled":
+            del event["reason"]
+    state_file.write_text(json.dumps(data))
+    api.start()
+    migrated = api.request("GET", other)
+    require(migrated["cancel_reason"] == LEGACY_REASON, "legacy cancelled plan did not receive a readable reason")
+    require(len(migrated["corrections"]) == 1, "legacy migration altered corrections")
+    events = api.request("GET", "/api/v1/events?entity_id=" + second["id"])["items"]
+    require(events[-2]["action"] == "cancelled" and "reason" not in events[-2], "legacy migration rewrote historical events")
+    require(events[-1]["action"] == "corrected" and events[-1]["reason"] == "更正：预算被冻结", "legacy migration altered later events")
+    api.request("POST", other + "/validate", {"revision": migrated["revision"]}, 409)
+    corrected = api.request("POST", other + "/correct", {"revision": migrated["revision"], "reason": "补充：旧系统取消于升级前"})
+    require(corrected["cancel_reason"] == LEGACY_REASON and len(corrected["corrections"]) == 2, "migrated plan did not accept a correction")
+    api.stop()
+    api.start()
+    require(api.request("GET", other)["cancel_reason"] == LEGACY_REASON, "migrated cancel reason did not persist")
 
 
 def main():
