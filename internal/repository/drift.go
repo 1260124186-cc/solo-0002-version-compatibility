@@ -12,7 +12,7 @@ import (
 // and later revisions must not invalidate the persisted evidence.
 func validateDriftFindings(check domain.DriftCheck) error {
 	total := len(check.Missing) + len(check.Extra) + len(check.VersionMismatches)
-	if total > domain.MaxReportedComponents {
+	if total > domain.MaxDriftComponentFindings {
 		return fmt.Errorf("drift check reports too many components")
 	}
 	statuses := map[string]bool{}

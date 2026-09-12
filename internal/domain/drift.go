@@ -13,6 +13,10 @@ const (
 
 	MaxDriftChecks        = 2000
 	MaxReportedComponents = 128
+	// Missing, extra and version-mismatch findings use disjoint component IDs.
+	// The expected and installed sets can each hold MaxReportedComponents and
+	// be disjoint, so the findings can number twice that.
+	MaxDriftComponentFindings = MaxReportedComponents * 2
 )
 
 // DriftComponentFinding describes one difference between the expected

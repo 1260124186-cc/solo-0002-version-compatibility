@@ -329,9 +329,50 @@ def drift_legacy(api, directory):
             "persisted drift record lost its basis after restart")
 
 
+def drift_scale(api):
+    # Regression for maximum-scale persistence: an environment whose resolved
+    # set has 128 components and an installed set made of 128 different
+    # components yields 128 missing plus 128 extra findings. The record must
+    # persist and the service must restart cleanly.
+    count = 128
+    chain = [f"scale-node-{i:03d}" for i in range(count)]
+    for name in chain:
+        component(api, name)
+    for i, name in enumerate(chain):
+        requires = {} if i == count - 1 else {chain[i + 1]: "^1.0.0"}
+        release(api, name, "1.0.0", requires)
+    env = api.request("POST", "/api/v1/environments",
+                      {"id": "scale-lab", "name": "规模环境", "roots": {chain[0]: "1.0.0"}}, 201)
+    require(len(env["resolved"]) == count, "environment must resolve all 128 chain components")
+
+    installed = {f"extra-node-{i:03d}": "1.0.0" for i in range(count)}
+    result = api.request("POST", "/api/v1/environments/scale-lab/drift-checks",
+                         {"environment_revision": env["revision"], "installed": installed}, 201)
+    require(len(result["missing"]) == count, "expected 128 missing components")
+    require(len(result["extra"]) == count, "expected 128 extra components")
+    require(len(result["unverifiable"]) == count, "expected 128 unverifiable unregistered releases")
+    require(result["conformant"] is False, "maximum-scale drift must not be conformant")
+    record_id = result["id"]
+
+    # The record has been committed; restarting must not reject the state.
+    api.stop()
+    api.start()
+    stored = api.request("GET", "/api/v1/drift-checks/" + record_id)
+    require(len(stored["missing"]) == count and len(stored["extra"]) == count,
+            "maximum-scale drift record lost findings after restart")
+    require(stored["environment_revision"] == env["revision"]
+            and stored["catalog_revision"] == result["catalog_revision"],
+            "maximum-scale drift record lost its basis after restart")
+    require(api.request("GET", "/api/v1/environments/scale-lab")["revision"] == env["revision"],
+            "environment changed during the maximum-scale drift check")
+    listing = api.request("GET", "/api/v1/drift-checks?limit=200")
+    require(listing["total"] == 1, "restarted service must expose the persisted record")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "drift", "drift-legacy"))
+    parser.add_argument("workflow",
+                        choices=("catalog", "resolve", "upgrade", "drift", "drift-legacy", "drift-scale"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
@@ -342,7 +383,9 @@ def main():
                 drift_legacy(api, directory)
             else:
                 api.start()
-                {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "drift": drift}[args.workflow](api)
+                workflows = {"catalog": catalog, "resolve": resolve, "upgrade": upgrade,
+                             "drift": drift, "drift-scale": drift_scale}
+                workflows[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()
