@@ -37,6 +37,11 @@ func New(s *service.Service, logger *slog.Logger, timeout time.Duration) http.Ha
 	a.route(mux, "/api/v1/plans/{id}/validate", map[string]http.HandlerFunc{"POST": a.validatePlan})
 	a.route(mux, "/api/v1/plans/{id}/apply", map[string]http.HandlerFunc{"POST": a.applyPlan})
 	a.route(mux, "/api/v1/plans/{id}/cancel", map[string]http.HandlerFunc{"POST": a.cancelPlan})
+	a.route(mux, "/api/v1/environments/{id}/lockfiles", map[string]http.HandlerFunc{"POST": a.createLockfile})
+	a.route(mux, "/api/v1/lockfiles", map[string]http.HandlerFunc{"GET": a.lockfiles, "POST": a.verifyLockfileDocument})
+	a.route(mux, "/api/v1/lockfiles/{id}", map[string]http.HandlerFunc{"GET": a.lockfile})
+	a.route(mux, "/api/v1/lockfiles/{id}/verify", map[string]http.HandlerFunc{"GET": a.verifyStoredLockfile})
+	a.route(mux, "/api/v1/lockfiles/{id}/export", map[string]http.HandlerFunc{"GET": a.exportLockfile})
 	a.route(mux, "/api/v1/events", map[string]http.HandlerFunc{"GET": a.events})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusNotFound, map[string]any{"error": map[string]string{"code": "not_found", "detail": "unknown endpoint"}})

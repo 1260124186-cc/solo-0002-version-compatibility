@@ -24,6 +24,11 @@
       "responsibility": "依赖求解"
     },
     {
+      "id": "locking",
+      "path": "internal/locking",
+      "responsibility": "不可变锁定文件、摘要与漂移比对"
+    },
+    {
       "id": "service",
       "path": "internal/service",
       "responsibility": "工作流编排"
@@ -103,6 +108,26 @@
         "httpapi",
         "service",
         "resolution",
+        "repository"
+      ]
+    },
+    {
+      "id": "lockfile",
+      "name": "环境修订不可变锁定",
+      "entry": "POST /api/v1/environments/{id}/lockfiles",
+      "steps": [
+        "冻结根依赖与精确解析集合",
+        "复制被选版本定义并记录约束依据与摘要",
+        "核验摘要并只读比对目录与环境漂移"
+      ],
+      "success": "锁定文件不可变且跨修订可区分、可核验、可导出",
+      "failure": "重复锁定返回 409，篡改件摘要核验失败",
+      "verification": "真实 HTTP 验证不可变性、篡改拒绝、漂移只读与重启持久",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "locking",
+        "domain",
         "repository"
       ]
     }

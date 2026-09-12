@@ -21,7 +21,10 @@ type State struct {
 	Catalog      domain.Catalog                `json:"catalog"`
 	Environments map[string]domain.Environment `json:"environments"`
 	Plans        map[string]domain.Plan        `json:"plans"`
-	Events       []Event                       `json:"events"`
+	// Lockfiles are immutable evidence records. Entries are created once and
+	// never rewritten or deleted by the service.
+	Lockfiles map[string]domain.Lockfile `json:"lockfiles"`
+	Events    []Event                    `json:"events"`
 }
 
 func NewState() *State {
@@ -33,6 +36,7 @@ func NewState() *State {
 		},
 		Environments: make(map[string]domain.Environment),
 		Plans:        make(map[string]domain.Plan),
+		Lockfiles:    make(map[string]domain.Lockfile),
 		Events:       make([]Event, 0),
 	}
 }
