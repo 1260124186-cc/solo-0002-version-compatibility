@@ -42,8 +42,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 			}
 		}
 		state.Plans[id] = plan
-		state.Record("plan", id, "created", at)
-		return nil
+		return state.Record("plan", id, "created", at, repository.EventPayload{Plan: &plan})
 	})
 	return plan, err
 }
@@ -138,9 +137,8 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		latest.Revision++
 		latest.UpdatedAt = now()
 		current.Plans[id] = latest
-		current.Record("plan", id, "validated", latest.UpdatedAt)
 		updated = latest
-		return nil
+		return current.Record("plan", id, "validated", latest.UpdatedAt, repository.EventPayload{Plan: &latest})
 	})
 	return updated, err
 }

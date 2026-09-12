@@ -38,8 +38,7 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 			return domain.Limit("environment capacity reached")
 		}
 		current.Environments[input.ID] = env
-		current.Record("environment", input.ID, "created", at)
-		return nil
+		return current.Record("environment", input.ID, "created", at, repository.EventPayload{Environment: &env})
 	})
 	return env, err
 }

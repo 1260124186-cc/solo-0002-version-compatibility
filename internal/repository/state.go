@@ -2,17 +2,29 @@ package repository
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"solo-0002-version-compatibility/internal/domain"
 )
 
+// EventPayload carries the post-image of every entity a mutation touched.
+// Replay folds these images instead of re-running business logic, so a
+// reconstruction depends only on the recorded events.
+type EventPayload struct {
+	Component   *domain.Component   `json:"component,omitempty"`
+	Release     *domain.Release     `json:"release,omitempty"`
+	Environment *domain.Environment `json:"environment,omitempty"`
+	Plan        *domain.Plan        `json:"plan,omitempty"`
+}
+
 type Event struct {
-	Sequence uint64    `json:"sequence"`
-	Kind     string    `json:"kind"`
-	EntityID string    `json:"entity_id"`
-	Action   string    `json:"action"`
-	At       time.Time `json:"at"`
+	Sequence uint64        `json:"sequence"`
+	Kind     string        `json:"kind"`
+	EntityID string        `json:"entity_id"`
+	Action   string        `json:"action"`
+	At       time.Time     `json:"at"`
+	Payload  *EventPayload `json:"payload,omitempty"`
 }
 
 type State struct {
@@ -50,7 +62,20 @@ func (s *State) Clone() (*State, error) {
 	return &result, nil
 }
 
-func (s *State) Record(kind, id, action string, at time.Time) {
+// Record appends the event that describes a mutation. The payload is
+// deep-copied so the historical record cannot drift with live state.
+func (s *State) Record(kind, id, action string, at time.Time, payload EventPayload) error {
+	if payload == (EventPayload{}) {
+		return fmt.Errorf("event must record the affected entity")
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	stored := EventPayload{}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return err
+	}
 	s.Revision++
 	s.Events = append(s.Events, Event{
 		Sequence: s.Revision,
@@ -58,8 +83,10 @@ func (s *State) Record(kind, id, action string, at time.Time) {
 		EntityID: id,
 		Action:   action,
 		At:       at,
+		Payload:  &stored,
 	})
 	if len(s.Events) > 10000 {
 		s.Events = s.Events[len(s.Events)-10000:]
 	}
+	return nil
 }

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"reflect"
 
 	"solo-0002-version-compatibility/internal/domain"
 	"solo-0002-version-compatibility/internal/semver"
@@ -95,10 +96,99 @@ func validateState(s *State) error {
 		if event.Sequence == 0 || event.Sequence > s.Revision || (i > 0 && event.Sequence != previous+1) {
 			return fmt.Errorf("invalid event sequence")
 		}
+		if err := validateEventPayload(event); err != nil {
+			return err
+		}
 		previous = event.Sequence
 	}
 	if previous != s.Revision {
 		return fmt.Errorf("event tail does not match state revision")
+	}
+	return checkEventTrail(s)
+}
+
+// validateEventPayload checks that a payload matches its event record. Events
+// written before payloads existed carry none and stay valid; replay reports
+// them as gaps instead.
+func validateEventPayload(event Event) error {
+	payload := event.Payload
+	if payload == nil {
+		return nil
+	}
+	mismatch := fmt.Errorf("event %d payload does not match its record", event.Sequence)
+	switch event.Kind {
+	case "component":
+		if payload.Component == nil || payload.Component.ID != event.EntityID || payload.Release != nil || payload.Environment != nil || payload.Plan != nil {
+			return mismatch
+		}
+	case "release":
+		if payload.Release == nil || payload.Release.ComponentID+"@"+payload.Release.Version != event.EntityID || payload.Component != nil || payload.Environment != nil || payload.Plan != nil {
+			return mismatch
+		}
+	case "environment":
+		if payload.Environment == nil || payload.Environment.ID != event.EntityID || payload.Component != nil || payload.Release != nil || payload.Plan != nil {
+			return mismatch
+		}
+	case "plan":
+		if payload.Plan == nil || payload.Plan.ID != event.EntityID || payload.Component != nil || payload.Release != nil {
+			return mismatch
+		}
+		if event.Action == "applied" {
+			if payload.Environment == nil || payload.Environment.ID != payload.Plan.EnvironmentID {
+				return mismatch
+			}
+		} else if payload.Environment != nil {
+			return mismatch
+		}
+	default:
+		return fmt.Errorf("event %d has unknown kind %q", event.Sequence, event.Kind)
+	}
+	return nil
+}
+
+// checkEventTrail verifies that the newest payload recorded for each entity
+// still matches the live state, so replaying the log reproduces the present.
+type entityKey struct {
+	kind    string
+	id      string
+	version string
+}
+
+func checkEventTrail(s *State) error {
+	latest := make(map[entityKey]any)
+	for _, event := range s.Events {
+		payload := event.Payload
+		if payload == nil {
+			continue
+		}
+		if payload.Component != nil {
+			latest[entityKey{kind: "component", id: payload.Component.ID}] = *payload.Component
+		}
+		if payload.Release != nil {
+			latest[entityKey{kind: "release", id: payload.Release.ComponentID, version: payload.Release.Version}] = *payload.Release
+		}
+		if payload.Environment != nil {
+			latest[entityKey{kind: "environment", id: payload.Environment.ID}] = *payload.Environment
+		}
+		if payload.Plan != nil {
+			latest[entityKey{kind: "plan", id: payload.Plan.ID}] = *payload.Plan
+		}
+	}
+	for key, recorded := range latest {
+		var current any
+		switch key.kind {
+		case "component":
+			current = s.Catalog.Components[key.id]
+		case "release":
+			current = s.Catalog.Releases[key.id][key.version]
+		case "environment":
+			current = s.Environments[key.id]
+		case "plan":
+			current = s.Plans[key.id]
+		}
+		if !reflect.DeepEqual(recorded, current) {
+			return fmt.Errorf("event trail diverges from persisted %s %s", key.kind, key.id)
+		}
 	}
 	return nil
 }

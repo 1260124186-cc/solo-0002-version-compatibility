@@ -165,15 +165,66 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def replay(api):
+    component(api, "audit-core")
+    release(api, "audit-core", "1.0.0")
+    release(api, "audit-core", "1.1.0")
+    api.request("POST", "/api/v1/environments", {"id": "audit-env", "name": "审计环境", "roots": {"audit-core": "1.0.0"}}, 201)
+    plan = api.request("POST", "/api/v1/plans", {"environment_id": "audit-env", "base_revision": 1,
+                                                 "roots": {"audit-core": "1.1.0"}, "reason": "重放审计验证"}, 201)
+    ready = api.request("POST", "/api/v1/plans/" + plan["id"] + "/validate", {"revision": 1})
+    api.request("POST", "/api/v1/plans/" + plan["id"] + "/apply", {"revision": ready["revision"]})
+    latest = api.request("GET", "/api/v1/events")["latest"]
+    require(latest == 7, "unexpected event count")
+
+    early = api.request("GET", "/api/v1/events/replay?sequence=2")
+    require(early["complete"] and early["replayed_events"] == 2, "complete replay expected")
+    require(early["state"]["revision"] == 2 and early["state"]["catalog_revision"] == 2, "replayed revisions wrong")
+    require([item["id"] for item in early["state"]["components"]] == ["audit-core"], "replayed components wrong")
+    require([item["version"] for item in early["state"]["releases"]["audit-core"]] == ["1.0.0"], "replayed releases wrong")
+    require(early["state"]["environments"] == [] and early["state"]["plans"] == [], "unexpected entities in early state")
+    comparison = early["comparison"]
+    require(not comparison["matches_current"] and comparison["events_since"] == 5, "comparison against current wrong")
+    require(comparison["releases"]["added"] == 1 and comparison["environments"]["added"] == 1, "added counts wrong")
+
+    midway = api.request("GET", "/api/v1/events/replay?sequence=5")
+    require(midway["state"]["plans"][0]["state"] == "draft", "plan state at sequence 5 wrong")
+    require(midway["state"]["environments"][0]["resolved"]["audit-core"] == "1.0.0", "environment at sequence 5 wrong")
+    require(midway["comparison"]["plans"]["changed"] == 1, "plan change not detected")
+    require(midway["comparison"]["environments"]["changed"] == 1, "environment change not detected")
+
+    current = api.request("GET", "/api/v1/events/replay?sequence=" + str(latest))
+    require(current["comparison"]["matches_current"], "replay at latest must match current state")
+    again = api.request("GET", "/api/v1/events/replay?sequence=" + str(latest))
+    require(again == current, "replay must be deterministic")
+
+    empty = api.request("GET", "/api/v1/events/replay?sequence=0")
+    require(empty["complete"] and empty["replayed_events"] == 0 and empty["state"]["components"] == [], "genesis replay wrong")
+    api.request("GET", "/api/v1/events/replay?sequence=8", expected=400)
+    api.request("GET", "/api/v1/events/replay", expected=400)
+
+    api.stop()
+    path = api.directory / "state" / "state.json"
+    state = json.loads(path.read_text())
+    state["events"] = state["events"][2:]
+    path.write_text(json.dumps(state))
+    api.start()
+    truncated = api.request("GET", "/api/v1/events/replay?sequence=" + str(latest))
+    require(not truncated["complete"], "truncated log must be reported incomplete")
+    require(truncated["missing"] == {"from": 1, "to": 2}, "missing segment wrong")
+    require("state" not in truncated, "incomplete replay must not expose a snapshot")
+    require(api.request("GET", "/api/v1/events/replay?sequence=0")["complete"], "genesis stays replayable")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "replay"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "replay": replay}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

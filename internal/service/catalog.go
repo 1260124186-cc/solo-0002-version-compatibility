@@ -24,8 +24,7 @@ func (s *Service) CreateComponent(ctx context.Context, input domain.ComponentInp
 		state.Catalog.Components[input.ID] = component
 		state.Catalog.Releases[input.ID] = make(map[string]domain.Release)
 		state.Catalog.Revision++
-		state.Record("component", input.ID, "created", component.CreatedAt)
-		return nil
+		return state.Record("component", input.ID, "created", component.CreatedAt, repository.EventPayload{Component: &component})
 	})
 	return component, err
 }
@@ -77,8 +76,7 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 		}
 		releases[input.Version] = release
 		state.Catalog.Revision++
-		state.Record("release", id+"@"+input.Version, "added", release.CreatedAt)
-		return nil
+		return state.Record("release", id+"@"+input.Version, "added", release.CreatedAt, repository.EventPayload{Release: &release})
 	})
 	return release, err
 }
@@ -123,9 +121,8 @@ func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (doma
 		release.WithdrawnAt = &at
 		state.Catalog.Releases[id][version] = release
 		state.Catalog.Revision++
-		state.Record("release", id+"@"+version, "withdrawn", at)
 		result = release
-		return nil
+		return state.Record("release", id+"@"+version, "withdrawn", at, repository.EventPayload{Release: &release})
 	})
 	return result, err
 }

@@ -68,8 +68,20 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
 | GET /events | 按序号增量读取变更事件 |
+| GET /events/replay | 重放到指定事件序号并生成审计报告 |
 
 集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+
+## 事件重放审计
+
+`GET /api/v1/events/replay?sequence=N` 将事件日志重放到序号 N，重建该时刻的组件、版本、环境与方案状态，返回一份可核对的审计报告。重放只折叠事件中记录的实体后像，不重新运行求解，也不读取当前内存状态；对同一序号重复请求得到相同结果。
+
+报告字段：
+
+- `complete` 为 `true` 时，`state` 给出重建的状态修订号、目录修订号、组件与版本、环境和方案；`replayed_events` 为折叠的事件数。
+- `comparison` 对照重建结果与当前状态：`matches_current` 表示两者实体完全一致，`events_since` 是之后发生的事件数，其余字段按实体类别给出新增、变更、移除计数。
+- 事件只保留最近 10000 条，更早的事件（包括负载能力上线前记录的无负载事件）无法参与重建。序号无法完整重建时 `complete` 为 `false`，`missing` 给出缺失的事件区间，报告不包含状态快照，避免把不完整的结果误认为完整快照。
+- `sequence=0` 表示初始空状态；序号超过最新事件返回 400。
 
 ## 约束及失败行为
 
@@ -86,7 +98,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 服务使用进程独占锁，两个进程不能共享同一数据目录。状态在 `state.json` 中保存，写入临时文件并执行 fsync 后原子替换。替换成功才更新内存；目录 fsync 尽力执行，因此极端断电持久性仍取决于宿主文件系统。数据上限 64 MiB。
 
-启动会校验 schema、引用关系、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制。
+启动会校验 schema、引用关系、选择结果与事件序号，并核对每个实体最新的事件负载与当前状态一致；损坏数据会使服务拒绝启动。事件负载与业务状态一同原子提交，负载缺失的历史事件仍可启动，但重放到其后的序号时会报告缺失区间。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制。
 
 ## 验证与测试边界
 
@@ -94,9 +106,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py replay
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消、事件重放与日志截断。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

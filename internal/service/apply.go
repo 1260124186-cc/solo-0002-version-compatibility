@@ -45,9 +45,8 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		plan.UpdatedAt = at
 		state.Environments[env.ID] = env
 		state.Plans[id] = plan
-		state.Record("plan", id, "applied", at)
 		result = AppliedResult{Plan: plan, Environment: env}
-		return nil
+		return state.Record("plan", id, "applied", at, repository.EventPayload{Plan: &plan, Environment: &env})
 	})
 	return result, err
 }
@@ -69,9 +68,8 @@ func (s *Service) CancelPlan(ctx context.Context, id string, revision uint64) (d
 		plan.Revision++
 		plan.UpdatedAt = now()
 		state.Plans[id] = plan
-		state.Record("plan", id, "cancelled", plan.UpdatedAt)
 		result = plan
-		return nil
+		return state.Record("plan", id, "cancelled", plan.UpdatedAt, repository.EventPayload{Plan: &plan})
 	})
 	return result, err
 }

@@ -29,6 +29,7 @@ func (s *Service) Events(ctx context.Context, after uint64, limit int, entityID 
 		}
 		page.NextAfter = event.Sequence
 		if entityID == "" || event.EntityID == entityID {
+			event.Payload = nil // payloads serve replay; the change feed stays slim
 			page.Items = append(page.Items, event)
 		}
 		if len(page.Items) == limit {
