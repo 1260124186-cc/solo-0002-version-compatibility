@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -119,6 +120,73 @@ def catalog(api):
     require(len(result["items"]) == 1 and result["items"][0]["state"] == "withdrawn", "durable version state changed after restart")
     events = api.request("GET", "/api/v1/events")["items"]
     require([event["action"] for event in events] == ["created", "added", "withdrawn"], "failed writes altered events")
+    check_event_filters(api, events)
+
+
+def check_event_filters(api, events):
+    created, added, withdrawn = (event["sequence"] for event in events)
+    require([event["action"] for event in events if event["kind"] == "component"] == ["created"], "entity_type filter failed")
+    require([event["action"] for event in events if event["kind"] == "release"] == ["added", "withdrawn"], "entity_type filter failed")
+
+    by_action = {}
+    for name in ("created", "added", "withdrawn"):
+        page = api.request("GET", f"/api/v1/events?action={name}&limit=1")
+        require(len(page["items"]) == 1 and page["items"][0]["action"] == name, "action filter failed")
+        by_action[name] = page
+    # limit=1 with sparse matches must advance past non-matching events instead of stalling.
+    page = api.request("GET", f"/api/v1/events?action=created&limit=1&after={by_action['created']['next_after']}")
+    require(page["items"] == [] and page["next_after"] == withdrawn and page["truncated"] is False, "filtered pagination did not scan past non-matching events")
+    page = api.request("GET", f"/api/v1/events?action=created&limit=1&after={page['next_after']}")
+    require(page["items"] == [] and page["next_after"] == withdrawn, "cursor moved after reaching latest")
+
+    release_id = "atlas-core@1.0.0"
+    page = api.request("GET", f"/api/v1/events?entity_id={release_id}&action=withdrawn")
+    require([event["sequence"] for event in page["items"]] == [withdrawn], "entity_id + action combination failed")
+    page = api.request("GET", "/api/v1/events?entity_type=release&action=created")
+    require(page["items"] == [], "combined filters did not narrow results")
+
+    # Walk every action page with limit=1: union must cover each event exactly once.
+    seen = set()
+    for name in ("created", "added", "withdrawn"):
+        cursor = 0
+        while True:
+            page = api.request("GET", f"/api/v1/events?action={name}&limit=1&after={cursor}")
+            require(page["next_after"] > cursor or page["items"] == [], "filtered page stopped advancing")
+            for event in page["items"]:
+                require(event["sequence"] not in seen and event["action"] == name, "filtered paging repeated or leaked an event")
+                seen.add(event["sequence"])
+            cursor = page["next_after"]
+            if not page["items"]:
+                break
+    require(seen == {created, added, withdrawn}, "filtered paging missed events")
+
+    earliest = events[0]["at"]
+    latest = events[-1]["at"]
+    # Bounds are inclusive: using the first event's own instant on both sides keeps it.
+    stamp = urllib.parse.quote(earliest, safe="")
+    page = api.request("GET", f"/api/v1/events?start_time={stamp}&end_time={stamp}")
+    require([event["sequence"] for event in page["items"]] == [created], "time bounds must be inclusive")
+    past = urllib.parse.quote("2000-01-01T00:00:00Z", safe="")
+    future = urllib.parse.quote("2099-01-01T00:00:00Z", safe="")
+    page = api.request("GET", f"/api/v1/events?start_time={past}&end_time={future}")
+    require(len(page["items"]) == 3, "wide time window hid events")
+    page = api.request("GET", f"/api/v1/events?start_time={future}")
+    require(page["items"] == [], "start_time is treated as an inclusive lower bound")
+    page = api.request("GET", f"/api/v1/events?end_time={past}")
+    require(page["items"] == [], "end_time is treated as an inclusive upper bound")
+    # No matches must still advance the cursor past retained events.
+    empty = api.request("GET", f"/api/v1/events?start_time={future}&after=0")
+    require(empty["items"] == [] and empty["next_after"] == withdrawn, "empty time window stalled the cursor")
+    # latest is always present and inside the whole-second window around it.
+    bound = urllib.parse.quote(latest, safe="")
+    page = api.request("GET", f"/api/v1/events?start_time={bound}&end_time={bound}")
+    require([event["sequence"] for event in page["items"]] == [withdrawn], "inclusive bounds lost the last event")
+
+    api.request("GET", "/api/v1/events?start_time=not-a-time", expected=400)
+    api.request("GET", "/api/v1/events?end_time=2026-01-01", expected=400)
+    api.request("GET", f"/api/v1/events?start_time={future}&end_time={past}", expected=400)
+    api.request("GET", "/api/v1/events?entity_type=component&entity_type=release", expected=400)
+    api.request("GET", "/api/v1/events?after=-1", expected=400)
 
 
 def resolve(api):

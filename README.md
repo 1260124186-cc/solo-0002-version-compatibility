@@ -67,9 +67,13 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
-| GET /events | 按序号增量读取变更事件 |
+| GET /events | 按序号增量读取变更事件，支持实体与动作、时间范围过滤 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`（1–200）及可选过滤参数 `entity_id`、`entity_type`、`action`、`start_time`、`end_time`，返回按 `sequence` 递增的 `items`、`next_after` 和 `latest`；过滤参数可任意组合（同时给出时取交集），仅需排查某个实体的特定动作时可一起使用。
+
+事件过滤参数取值：`entity_type` 为 `component`、`release`、`environment`、`plan`；`action` 为 `created`、`added`、`withdrawn`、`validated`、`applied`、`cancelled`；时间参数为 RFC 3339 时间戳（如 `2026-01-02T15:04:05Z`，接受小数秒和时区偏移），`start_time` 与 `end_time` 均为闭区间边界（恰好在边界时刻的事件包含在内）。时间格式无法解析，或 `start_time` 晚于 `end_time`，返回 400 输入错误。
+
+即使当前页没有任何匹配记录，`next_after` 也会推进到已扫描到的最后一个事件序号，因此匹配稀疏时持续翻页不会停在同一位置，也不会重复或跳过后续记录；到达 `latest` 后 `next_after` 不再变化。事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`；该判定基于事件序号而非过滤条件，历史已被裁剪时即使配合过滤参数也能准确返回。
 
 ## 约束及失败行为
 
