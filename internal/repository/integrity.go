@@ -82,7 +82,13 @@ func validateState(s *State) error {
 		}
 		switch plan.State {
 		case domain.Draft, domain.Cancelled:
-		case domain.Ready, domain.Applied:
+		case domain.Ready:
+			// Withdrawal is refused while a ready plan selects a release,
+			// so a persisted ready plan must stay applicable as is.
+			if err := ValidateSelection(s.Catalog, plan.Roots, plan.Resolved, true); err != nil {
+				return err
+			}
+		case domain.Applied:
 			if err := ValidateSelection(s.Catalog, plan.Roots, plan.Resolved, false); err != nil {
 				return err
 			}

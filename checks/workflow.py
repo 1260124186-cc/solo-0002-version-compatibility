@@ -159,6 +159,18 @@ def upgrade(api):
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    third = api.request("POST", "/api/v1/plans", {"environment_id": "integration", "base_revision": 2, "roots": {"render-engine": "1.0.0"}, "reason": "回退到旧版集合"}, 201)
+    third_path = "/api/v1/plans/" + third["id"]
+    ready_third = api.request("POST", third_path + "/validate", {"revision": 1})
+    require(ready_third["resolved"]["atlas-core"] == "1.0.0", "rollback plan resolved unexpected versions")
+    conflict = api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {}, 409)
+    require(third["id"] in conflict["error"]["detail"], "withdrawal conflict did not name the ready plan")
+    require(api.request("GET", third_path)["state"] == "ready", "blocked withdrawal changed the ready plan")
+    releases = api.request("GET", "/api/v1/components/atlas-core/releases")["items"]
+    require(all(item["state"] == "available" for item in releases), "blocked withdrawal still changed the release")
+    api.request("POST", third_path + "/cancel", {"revision": ready_third["revision"]})
+    withdrawn = api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw", {})
+    require(withdrawn["state"] == "withdrawn", "withdrawal failed after the ready plan was cancelled")
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")

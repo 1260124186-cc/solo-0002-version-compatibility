@@ -49,7 +49,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
 3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
 
-根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
+根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。被 ready 方案解析选中的版本同样视为使用中，撤回会被拒绝并指明该方案，可先取消方案再撤回；已应用或已取消的方案不影响撤回。
 
 ## 接口索引
 
@@ -58,7 +58,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET、POST /components | 分页查询、创建组件 |
 | GET /components/{id} | 获取组件详情 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
-| POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
+| POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未被环境或 ready 方案使用的版本 |
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |

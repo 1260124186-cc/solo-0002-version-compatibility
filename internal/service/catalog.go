@@ -118,6 +118,12 @@ func (s *Service) WithdrawRelease(ctx context.Context, id, version string) (doma
 				return domain.Conflict("release is used by environment %s", envID)
 			}
 		}
+		for _, planID := range domain.SortedKeys(state.Plans) {
+			plan := state.Plans[planID]
+			if plan.State == domain.Ready && plan.Resolved[id] == version {
+				return domain.Conflict("release is selected by ready plan %s", planID)
+			}
+		}
 		at := now()
 		release.State = domain.Withdrawn
 		release.WithdrawnAt = &at
