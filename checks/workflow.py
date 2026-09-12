@@ -156,13 +156,36 @@ def upgrade(api):
     api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
     other = "/api/v1/plans/" + second["id"]
     api.request("POST", other + "/validate", {"revision": 1}, 409)
-    cancelled = api.request("POST", other + "/cancel", {"revision": 1})
-    require(cancelled["state"] == "cancelled", "plan cancellation failed")
+    api.request("POST", other + "/cancel", {"revision": 1}, 400)
+    api.request("POST", other + "/cancel", {"revision": 1, "reason": "  "}, 400)
+    cancelled = api.request("POST", other + "/cancel", {"revision": 1, "reason": "需求变更，放弃本次升级"})
+    require(cancelled["state"] == "cancelled" and cancelled["cancel_reason"] == "需求变更，放弃本次升级", "plan cancellation did not record its reason")
+    require(api.request("GET", other)["cancel_reason"] == "需求变更，放弃本次升级", "plan detail did not show the cancel reason")
+    events = api.request("GET", "/api/v1/events?entity_id=" + second["id"])["items"]
+    require([event["action"] for event in events] == ["created", "cancelled"], "unexpected plan event trail")
+    require(events[-1]["reason"] == "需求变更，放弃本次升级", "cancel event did not carry its reason")
+    for action in ("validate", "apply", "cancel"):
+        for revision in (1, cancelled["revision"]):
+            payload = {"revision": revision}
+            if action == "cancel":
+                payload["reason"] = "再次取消"
+            result = api.request("POST", other + "/" + action, payload, 409)
+            require(result["error"]["code"] == "conflict", "cancelled plan did not return a stable conflict")
+    api.request("POST", other + "/correct", {"revision": cancelled["revision"]}, 400)
+    api.request("POST", other + "/correct", {"revision": 1, "reason": "旧修订号"}, 409)
+    api.request("POST", path + "/correct", {"revision": applied["plan"]["revision"], "reason": "不应更正"}, 409)
+    corrected = api.request("POST", other + "/correct", {"revision": cancelled["revision"], "reason": "更正：预算被冻结"})
+    require(corrected["cancel_reason"] == "需求变更，放弃本次升级", "correction modified the original cancel reason")
+    require(corrected["corrections"][-1]["reason"] == "更正：预算被冻结", "correction was not appended")
+    events = api.request("GET", "/api/v1/events?entity_id=" + second["id"])["items"]
+    require(events[-1]["action"] == "corrected" and events[-1]["reason"] == "更正：预算被冻结", "correction event did not carry its reason")
     api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    restored = api.request("GET", other)
+    require(restored["cancel_reason"] == "需求变更，放弃本次升级" and len(restored["corrections"]) == 1, "cancel reason did not persist with the plan")
 
 
 def main():

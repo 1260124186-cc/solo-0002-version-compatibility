@@ -12,6 +12,7 @@ type Event struct {
 	Kind     string    `json:"kind"`
 	EntityID string    `json:"entity_id"`
 	Action   string    `json:"action"`
+	Reason   string    `json:"reason,omitempty"`
 	At       time.Time `json:"at"`
 }
 
@@ -50,13 +51,14 @@ func (s *State) Clone() (*State, error) {
 	return &result, nil
 }
 
-func (s *State) Record(kind, id, action string, at time.Time) {
+func (s *State) Record(kind, id, action, reason string, at time.Time) {
 	s.Revision++
 	s.Events = append(s.Events, Event{
 		Sequence: s.Revision,
 		Kind:     kind,
 		EntityID: id,
 		Action:   action,
+		Reason:   reason,
 		At:       at,
 	})
 	if len(s.Events) > 10000 {

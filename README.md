@@ -47,9 +47,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 1. `POST /api/v1/plans/{id}/validate`，发送 `{"revision":1}`。成功返回 `ready` 方案，其 `changes` 描述新增、移除、升级或降级；后续请求必须使用返回的新修订号。
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
-3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
+3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`，请求必须包含修订号和必填的 `reason`。原因写入取消事件并保存在方案的 `cancel_reason` 中；已取消方案不可再验证、应用或再次取消。`cancel_reason` 不可修改，需要更正时调用 `/correct` 追加一条更正记录，原原因保持不变。已经应用的方案不能取消，应建立另一个方案调整环境。
 
-根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
+根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。已取消方案是终态：任何验证、应用或再次取消请求都返回 409 冲突，与提交的修订号无关；取消原因随方案修订一同持久化，事件流中的 `cancelled` 与 `corrected` 事件均携带对应原因。
 
 ## 接口索引
 
@@ -66,7 +66,8 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
-| POST /plans/{id}/cancel | 取消尚未应用的方案 |
+| POST /plans/{id}/cancel | 携带必填原因取消尚未应用的方案 |
+| POST /plans/{id}/correct | 为已取消方案追加更正记录，不修改原取消原因 |
 | GET /events | 按序号增量读取变更事件 |
 
 集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。

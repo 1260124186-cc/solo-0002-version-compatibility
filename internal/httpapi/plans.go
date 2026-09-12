@@ -78,12 +78,26 @@ func (a *API) applyPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) cancelPlan(w http.ResponseWriter, r *http.Request) {
-	var input domain.RevisionInput
+	var input domain.ReasonInput
 	if err := decode(w, r, &input); err != nil {
 		fail(w, err)
 		return
 	}
-	result, err := a.service.CancelPlan(r.Context(), r.PathValue("id"), input.Revision)
+	result, err := a.service.CancelPlan(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
+func (a *API) correctPlan(w http.ResponseWriter, r *http.Request) {
+	var input domain.ReasonInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.CorrectPlan(r.Context(), r.PathValue("id"), input)
 	if err != nil {
 		fail(w, err)
 		return

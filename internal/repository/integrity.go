@@ -89,6 +89,21 @@ func validateState(s *State) error {
 		default:
 			return fmt.Errorf("invalid plan state")
 		}
+		if plan.State == domain.Cancelled {
+			if err := domain.ValidateReason(plan.CancelReason); err != nil {
+				return err
+			}
+			for _, correction := range plan.Corrections {
+				if err := domain.ValidateReason(correction.Reason); err != nil {
+					return err
+				}
+				if correction.At.IsZero() {
+					return fmt.Errorf("correction is missing its timestamp")
+				}
+			}
+		} else if plan.CancelReason != "" || len(plan.Corrections) > 0 {
+			return fmt.Errorf("uncancelled plan carries cancellation data")
+		}
 	}
 	var previous uint64
 	for i, event := range s.Events {

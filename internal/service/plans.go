@@ -13,7 +13,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 	if err := domain.ValidateRequirements(input.Roots, false); err != nil {
 		return domain.Plan{}, err
 	}
-	if err := domain.ValidateText(input.Reason, "reason", 1, 1000); err != nil {
+	if err := domain.ValidateReason(input.Reason); err != nil {
 		return domain.Plan{}, err
 	}
 	if input.BaseRevision == 0 {
@@ -42,7 +42,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 			}
 		}
 		state.Plans[id] = plan
-		state.Record("plan", id, "created", at)
+		state.Record("plan", id, "created", "", at)
 		return nil
 	})
 	return plan, err
@@ -101,6 +101,9 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 	if !exists {
 		return plan, domain.Missing("plan", id)
 	}
+	if err := plan.CheckNotCancelled("validate"); err != nil {
+		return plan, err
+	}
 	if err := plan.CheckRevision(revision); err != nil {
 		return plan, err
 	}
@@ -119,6 +122,9 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 	var updated domain.Plan
 	err = s.repo.Update(ctx, func(current *repository.State) error {
 		latest := current.Plans[id]
+		if err := latest.CheckNotCancelled("validate"); err != nil {
+			return err
+		}
 		if err := latest.CheckRevision(revision); err != nil {
 			return err
 		}
@@ -138,7 +144,7 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		latest.Revision++
 		latest.UpdatedAt = now()
 		current.Plans[id] = latest
-		current.Record("plan", id, "validated", latest.UpdatedAt)
+		current.Record("plan", id, "validated", "", latest.UpdatedAt)
 		updated = latest
 		return nil
 	})

@@ -35,6 +35,11 @@ func ValidateText(value, field string, minimum, maximum int) error {
 	return nil
 }
 
+// ValidateReason applies the shared limits for plan, cancel and correction reasons.
+func ValidateReason(reason string) error {
+	return ValidateText(reason, "reason", 1, 1000)
+}
+
 func ValidateRequirements(requirements map[string]string, allowEmpty bool) error {
 	if len(requirements) > MaxDependencies || (!allowEmpty && len(requirements) == 0) {
 		return Invalid("requirements must contain %d–%d entries", boolMinimum(allowEmpty), MaxDependencies)

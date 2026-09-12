@@ -16,6 +16,12 @@ type Change struct {
 	Kind        string `json:"kind"`
 }
 
+// Correction appends an immutable clarification to a cancelled plan.
+type Correction struct {
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
+}
+
 type Plan struct {
 	ID              string            `json:"id"`
 	EnvironmentID   string            `json:"environment_id"`
@@ -27,6 +33,8 @@ type Plan struct {
 	Changes         []Change          `json:"changes"`
 	State           string            `json:"state"`
 	Reason          string            `json:"reason"`
+	CancelReason    string            `json:"cancel_reason,omitempty"`
+	Corrections     []Correction      `json:"corrections,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 }
@@ -42,6 +50,12 @@ type RevisionInput struct {
 	Revision uint64 `json:"revision"`
 }
 
+// ReasonInput is the body for cancel and correct actions.
+type ReasonInput struct {
+	Revision uint64 `json:"revision"`
+	Reason   string `json:"reason"`
+}
+
 func (p Plan) CanValidate() error {
 	if p.State != Draft && p.State != Ready {
 		return Conflict("cannot validate a %s plan", p.State)
@@ -52,6 +66,15 @@ func (p Plan) CanValidate() error {
 func (p Plan) CanCancel() error {
 	if p.State != Draft && p.State != Ready {
 		return Conflict("cannot cancel a %s plan", p.State)
+	}
+	return nil
+}
+
+// CheckNotCancelled reports the same conflict for every action on a
+// cancelled plan, regardless of the revision the caller supplies.
+func (p Plan) CheckNotCancelled(action string) error {
+	if p.State == Cancelled {
+		return Conflict("cannot %s a cancelled plan", action)
 	}
 	return nil
 }

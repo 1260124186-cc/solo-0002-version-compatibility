@@ -19,6 +19,9 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		if !exists {
 			return domain.Missing("plan", id)
 		}
+		if err := plan.CheckNotCancelled("apply"); err != nil {
+			return err
+		}
 		if err := plan.CheckRevision(revision); err != nil {
 			return err
 		}
@@ -45,31 +48,67 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		plan.UpdatedAt = at
 		state.Environments[env.ID] = env
 		state.Plans[id] = plan
-		state.Record("plan", id, "applied", at)
+		state.Record("plan", id, "applied", "", at)
 		result = AppliedResult{Plan: plan, Environment: env}
 		return nil
 	})
 	return result, err
 }
 
-func (s *Service) CancelPlan(ctx context.Context, id string, revision uint64) (domain.Plan, error) {
+func (s *Service) CancelPlan(ctx context.Context, id string, input domain.ReasonInput) (domain.Plan, error) {
+	if err := domain.ValidateReason(input.Reason); err != nil {
+		return domain.Plan{}, err
+	}
 	var result domain.Plan
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		plan, exists := state.Plans[id]
 		if !exists {
 			return domain.Missing("plan", id)
 		}
-		if err := plan.CheckRevision(revision); err != nil {
+		if err := plan.CheckNotCancelled("cancel"); err != nil {
+			return err
+		}
+		if err := plan.CheckRevision(input.Revision); err != nil {
 			return err
 		}
 		if err := plan.CanCancel(); err != nil {
 			return err
 		}
 		plan.State = domain.Cancelled
+		plan.CancelReason = input.Reason
 		plan.Revision++
 		plan.UpdatedAt = now()
 		state.Plans[id] = plan
-		state.Record("plan", id, "cancelled", plan.UpdatedAt)
+		state.Record("plan", id, "cancelled", input.Reason, plan.UpdatedAt)
+		result = plan
+		return nil
+	})
+	return result, err
+}
+
+// CorrectPlan appends an immutable correction to the recorded cancel reason.
+func (s *Service) CorrectPlan(ctx context.Context, id string, input domain.ReasonInput) (domain.Plan, error) {
+	if err := domain.ValidateReason(input.Reason); err != nil {
+		return domain.Plan{}, err
+	}
+	var result domain.Plan
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		plan, exists := state.Plans[id]
+		if !exists {
+			return domain.Missing("plan", id)
+		}
+		if plan.State != domain.Cancelled {
+			return domain.Conflict("only a cancelled plan can be corrected")
+		}
+		if err := plan.CheckRevision(input.Revision); err != nil {
+			return err
+		}
+		at := now()
+		plan.Corrections = append(plan.Corrections, domain.Correction{Reason: input.Reason, At: at})
+		plan.Revision++
+		plan.UpdatedAt = at
+		state.Plans[id] = plan
+		state.Record("plan", id, "corrected", input.Reason, at)
 		result = plan
 		return nil
 	})
