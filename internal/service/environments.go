@@ -31,6 +31,9 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 		if err := checkCatalog(resolved.CatalogRevision, current); err != nil {
 			return err
 		}
+		if err := rejectNewRetiredComponents(current.Catalog, resolved.Resolved, nil, false); err != nil {
+			return err
+		}
 		if _, exists := current.Environments[input.ID]; exists {
 			return domain.Conflict("environment already exists")
 		}

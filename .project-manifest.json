@@ -105,6 +105,26 @@
         "resolution",
         "repository"
       ]
+    },
+    {
+      "id": "lifecycle",
+      "name": "组件生命周期管理",
+      "entry": "POST /api/v1/components/{id}/lifecycle",
+      "steps": [
+        "校验允许的生命周期迁移与原因",
+        "更新组件状态、时间戳和生命周期历史",
+        "在新环境或已有环境新引用处执行准入"
+      ],
+      "success": "弃用停止新增版本，下线阻止新引用且历史不受影响",
+      "failure": "非法迁移或新引用被拒绝并保持原状态",
+      "verification": "真实 HTTP 验证弃用、重新激活、下线、恢复及历史持久化",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "repository",
+        "resolution"
+      ]
     }
   ]
 }

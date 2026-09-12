@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -82,6 +83,49 @@ func ValidateComponent(input ComponentInput) error {
 		return err
 	}
 	return ValidateText(input.Description, "description", 0, 2000)
+}
+
+func ValidateLifecycle(input LifecycleInput) error {
+	switch input.State {
+	case Active, Deprecated, Retired:
+	default:
+		return Invalid("lifecycle state must be active, deprecated or retired")
+	}
+	return ValidateText(input.Reason, "reason", 1, 500)
+}
+
+func (c *Component) TransitionLifecycle(input LifecycleInput, at time.Time) error {
+	switch input.State {
+	case Active:
+		if c.State != Deprecated && c.State != Retired {
+			return Conflict("only a deprecated or retired component can be reactivated")
+		}
+	case Deprecated:
+		if c.State != Active {
+			return Conflict("only an active component can be deprecated")
+		}
+	case Retired:
+		if c.State != Deprecated {
+			return Conflict("only a deprecated component can be retired")
+		}
+	default:
+		return Invalid("lifecycle state must be active, deprecated or retired")
+	}
+
+	from := c.State
+	c.State = input.State
+	switch input.State {
+	case Active:
+		c.DeprecatedAt = nil
+		c.RetiredAt = nil
+	case Deprecated:
+		c.DeprecatedAt = &at
+		c.RetiredAt = nil
+	case Retired:
+		c.RetiredAt = &at
+	}
+	c.Lifecycle = append(c.Lifecycle, LifecycleTransition{From: from, To: input.State, Reason: input.Reason, At: at})
+	return nil
 }
 
 func ValidateRelease(input ReleaseInput, componentID string) error {

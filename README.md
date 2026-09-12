@@ -51,12 +51,50 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 组件生命周期
+
+组件具有独立于版本的生命周期状态：
+
+| 状态 | 新增版本 | `/resolve` 分析 | 新环境引用 | 已有环境保留与重新求解 |
+| --- | --- | --- | --- | --- |
+| `active` | 允许 | 允许 | 允许 | 允许 |
+| `deprecated` | 拒绝 | 允许 | 允许 | 允许 |
+| `retired` | 拒绝 | 允许，但只是计算结果 | 拒绝 | 已在环境中的组件允许保留；不允许新增该组件 |
+
+状态迁移只允许：
+
+```text
+active      → deprecated
+deprecated  → active      （重新激活）
+deprecated  → retired
+retired     → active      （显式恢复）
+```
+
+不允许 `active` 直接 `retired`；相同状态的重复写入也会被拒绝。每个组件最多保留 100 条生命周期迁移。弃用和恢复都会保留已有 Release：Release 仍为 `available` 或 `withdrawn`，组件状态不会隐式撤回版本。下线后的恢复是一个需要原因的显式动作，恢复为 `active` 后才可以添加版本并重新被新环境引用。
+
+```sh
+curl -s http://127.0.0.1:8092/api/v1/components/render-unit/lifecycle \
+  -H 'Content-Type: application/json' \
+  -d '{"state":"deprecated","reason":"停止增强，进入维护观察期"}'
+curl -s http://127.0.0.1:8092/api/v1/components/render-unit/lifecycle \
+  -H 'Content-Type: application/json' \
+  -d '{"state":"retired","reason":"停止新环境接入"}'
+curl -s http://127.0.0.1:8092/api/v1/components/render-unit/lifecycle \
+  -H 'Content-Type: application/json' \
+  -d '{"state":"active","reason":"恢复维护"}'
+```
+
+组件响应包含当前 `state`、`deprecated_at`、`retired_at` 及完整 `lifecycle` 时间线；全局事件记录 `deprecated`、`reactivated`、`retired`、`restored` 动作，并在 metadata 中保存 `from`、`to` 和 `reason`。生命周期变化属于目录变化，会递增目录修订号。
+
+求解器只检查语义版本约束和 Release 是否 `available`；组件生命周期准入只在创建环境和验证已有环境方案时执行一次。这样下线规则不会在求解器、版本撤回和修订号检查中重复实现。Release 撤回仍然只由 Release 状态控制，且不会因为组件弃用或下线而改变。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
 | --- | --- |
 | GET、POST /components | 分页查询、创建组件 |
-| GET /components/{id} | 获取组件详情 |
+| GET /components/{id} | 获取组件详情、生命周期状态与时间线 |
+| POST /components/{id}/lifecycle | 弃用、重新激活、下线或恢复组件 |
 | GET、POST /components/{id}/releases | 按版本降序分页查询、添加不可变版本 |
 | POST /components/{id}/releases/{version}/withdraw | 使用空对象请求撤回未使用版本 |
 | POST /resolve | 求解根依赖和传递依赖 |
@@ -86,7 +124,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 服务使用进程独占锁，两个进程不能共享同一数据目录。状态在 `state.json` 中保存，写入临时文件并执行 fsync 后原子替换。替换成功才更新内存；目录 fsync 尽力执行，因此极端断电持久性仍取决于宿主文件系统。数据上限 64 MiB。
 
-启动会校验 schema、引用关系、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制。
+启动会校验 schema、引用关系、生命周期时间线、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制；旧状态缺少新增生命周期字段时，按历史组件均为 `active` 兼容加载。
 
 ## 验证与测试边界
 
@@ -94,9 +132,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py lifecycle
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、组件弃用/重新激活/下线/恢复、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

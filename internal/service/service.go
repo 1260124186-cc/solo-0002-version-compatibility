@@ -51,3 +51,20 @@ func checkEnvironment(env domain.Environment, revision uint64) error {
 	}
 	return nil
 }
+
+func rejectNewRetiredComponents(catalog domain.Catalog, selected map[string]string, existing map[string]string, allowExisting bool) error {
+	for _, id := range domain.SortedKeys(selected) {
+		if allowExisting {
+			if _, alreadyUsed := existing[id]; alreadyUsed {
+				continue
+			}
+		}
+		if component, exists := catalog.Components[id]; exists && component.State == domain.Retired {
+			if allowExisting {
+				return domain.Conflict("retired component %s cannot be added to an existing environment", id)
+			}
+			return domain.Conflict("retired component %s cannot be referenced by a new environment", id)
+		}
+	}
+	return nil
+}

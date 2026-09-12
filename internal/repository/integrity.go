@@ -2,10 +2,82 @@ package repository
 
 import (
 	"fmt"
+	"time"
 
 	"solo-0002-version-compatibility/internal/domain"
 	"solo-0002-version-compatibility/internal/semver"
 )
+
+func normalizeState(s *State) {
+	if s.Catalog.Components == nil {
+		s.Catalog.Components = make(map[string]domain.Component)
+	}
+	if s.Catalog.Releases == nil {
+		s.Catalog.Releases = make(map[string]map[string]domain.Release)
+	}
+	for id, component := range s.Catalog.Components {
+		if component.State == "" {
+			component.State = domain.Active
+		}
+		if component.Lifecycle == nil {
+			component.Lifecycle = make([]domain.LifecycleTransition, 0)
+		}
+		s.Catalog.Components[id] = component
+	}
+}
+
+func validateLifecycle(component domain.Component) error {
+	if len(component.Lifecycle) > domain.MaxLifecycle {
+		return fmt.Errorf("component lifecycle history exceeds capacity")
+	}
+	current := domain.Active
+	var deprecatedAt, retiredAt *time.Time
+	var previous time.Time
+	for _, transition := range component.Lifecycle {
+		if err := domain.ValidateText(transition.Reason, "lifecycle reason", 1, 500); err != nil {
+			return err
+		}
+		if transition.At.IsZero() || (!previous.IsZero() && transition.At.Before(previous)) {
+			return fmt.Errorf("invalid lifecycle transition time")
+		}
+		if transition.From != current {
+			return fmt.Errorf("non-contiguous component lifecycle")
+		}
+		switch {
+		case current == domain.Active && transition.To == domain.Deprecated:
+			at := transition.At
+			deprecatedAt = &at
+			retiredAt = nil
+		case current == domain.Deprecated && transition.To == domain.Active:
+			deprecatedAt = nil
+			retiredAt = nil
+		case current == domain.Deprecated && transition.To == domain.Retired:
+			at := transition.At
+			retiredAt = &at
+		case current == domain.Retired && transition.To == domain.Active:
+			deprecatedAt = nil
+			retiredAt = nil
+		default:
+			return fmt.Errorf("invalid component lifecycle transition")
+		}
+		current = transition.To
+		previous = transition.At
+	}
+	if current != component.State {
+		return fmt.Errorf("component lifecycle does not end in current state")
+	}
+	if (deprecatedAt == nil) != (component.DeprecatedAt == nil) ||
+		(retiredAt == nil) != (component.RetiredAt == nil) {
+		return fmt.Errorf("component lifecycle timestamps do not match history")
+	}
+	if deprecatedAt != nil && !component.DeprecatedAt.Equal(*deprecatedAt) {
+		return fmt.Errorf("component deprecation timestamp mismatch")
+	}
+	if retiredAt != nil && !component.RetiredAt.Equal(*retiredAt) {
+		return fmt.Errorf("component retirement timestamp mismatch")
+	}
+	return nil
+}
 
 func validateState(s *State) error {
 	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
@@ -25,6 +97,9 @@ func validateState(s *State) error {
 			return fmt.Errorf("component key mismatch")
 		}
 		if err := domain.ValidateComponent(domain.ComponentInput{ID: id, Name: component.Name, Description: component.Description}); err != nil {
+			return err
+		}
+		if err := validateLifecycle(component); err != nil {
 			return err
 		}
 	}

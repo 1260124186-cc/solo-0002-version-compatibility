@@ -50,6 +50,20 @@ func (a *API) component(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, result)
 }
 
+func (a *API) lifecycle(w http.ResponseWriter, r *http.Request) {
+	var input domain.LifecycleInput
+	if err := decode(w, r, &input); err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.TransitionLifecycle(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, result)
+}
+
 func (a *API) addRelease(w http.ResponseWriter, r *http.Request) {
 	var input domain.ReleaseInput
 	if err := decode(w, r, &input); err != nil {

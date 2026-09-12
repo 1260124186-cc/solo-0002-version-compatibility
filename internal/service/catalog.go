@@ -13,7 +13,14 @@ func (s *Service) CreateComponent(ctx context.Context, input domain.ComponentInp
 	if err := domain.ValidateComponent(input); err != nil {
 		return domain.Component{}, err
 	}
-	component := domain.Component{ID: input.ID, Name: input.Name, Description: input.Description, CreatedAt: now()}
+	component := domain.Component{
+		ID:          input.ID,
+		Name:        input.Name,
+		Description: input.Description,
+		State:       domain.Active,
+		CreatedAt:   now(),
+		Lifecycle:   make([]domain.LifecycleTransition, 0),
+	}
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		if _, exists := state.Catalog.Components[input.ID]; exists {
 			return domain.Conflict("component %s already exists", input.ID)
@@ -54,6 +61,41 @@ func (s *Service) Component(ctx context.Context, id string) (domain.Component, e
 	return component, nil
 }
 
+func (s *Service) TransitionLifecycle(ctx context.Context, id string, input domain.LifecycleInput) (domain.Component, error) {
+	if err := domain.ValidateLifecycle(input); err != nil {
+		return domain.Component{}, err
+	}
+	var result domain.Component
+	err := s.repo.Update(ctx, func(state *repository.State) error {
+		component, exists := state.Catalog.Components[id]
+		if !exists {
+			return domain.Missing("component", id)
+		}
+		if len(component.Lifecycle) >= domain.MaxLifecycle {
+			return domain.Limit("component lifecycle history capacity reached")
+		}
+		from := component.State
+		at := now()
+		if err := component.TransitionLifecycle(input, at); err != nil {
+			return err
+		}
+		action := "deprecated"
+		if input.State == domain.Retired {
+			action = "retired"
+		} else if input.State == domain.Active && from == domain.Retired {
+			action = "restored"
+		} else if input.State == domain.Active {
+			action = "reactivated"
+		}
+		state.Catalog.Components[id] = component
+		state.Catalog.Revision++
+		state.RecordLifecycle(id, action, from, input.State, input.Reason, at)
+		result = component
+		return nil
+	})
+	return result, err
+}
+
 func (s *Service) AddRelease(ctx context.Context, id string, input domain.ReleaseInput) (domain.Release, error) {
 	if err := domain.ValidateRelease(input, id); err != nil {
 		return domain.Release{}, err
@@ -62,6 +104,9 @@ func (s *Service) AddRelease(ctx context.Context, id string, input domain.Releas
 	err := s.repo.Update(ctx, func(state *repository.State) error {
 		if _, exists := state.Catalog.Components[id]; !exists {
 			return domain.Missing("component", id)
+		}
+		if state.Catalog.Components[id].State != domain.Active {
+			return domain.Conflict("cannot add a release to a %s component", state.Catalog.Components[id].State)
 		}
 		releases := state.Catalog.Releases[id]
 		if _, exists := releases[input.Version]; exists {

@@ -2,11 +2,22 @@ package domain
 
 import "time"
 
+type LifecycleTransition struct {
+	From   string    `json:"from"`
+	To     string    `json:"to"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
+}
+
 type Component struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	State        string                `json:"state"`
+	CreatedAt    time.Time             `json:"created_at"`
+	DeprecatedAt *time.Time            `json:"deprecated_at,omitempty"`
+	RetiredAt    *time.Time            `json:"retired_at,omitempty"`
+	Lifecycle    []LifecycleTransition `json:"lifecycle"`
 }
 
 type Release struct {
@@ -24,6 +35,11 @@ type ComponentInput struct {
 	Description string `json:"description"`
 }
 
+type LifecycleInput struct {
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+}
+
 type ReleaseInput struct {
 	Version  string            `json:"version"`
 	Requires map[string]string `json:"requires"`
@@ -38,7 +54,11 @@ type Catalog struct {
 const (
 	Available       = "available"
 	Withdrawn       = "withdrawn"
+	Active          = "active"
+	Deprecated      = "deprecated"
+	Retired         = "retired"
 	MaxComponents   = 500
 	MaxReleases     = 200
+	MaxLifecycle    = 100
 	MaxDependencies = 32
 )

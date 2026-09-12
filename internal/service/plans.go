@@ -131,6 +131,9 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		if err := checkEnvironment(current.Environments[plan.EnvironmentID], plan.BaseRevision); err != nil {
 			return err
 		}
+		if err := rejectNewRetiredComponents(current.Catalog, result.Resolved, current.Environments[plan.EnvironmentID].Resolved, true); err != nil {
+			return err
+		}
 		latest.State = domain.Ready
 		latest.Resolved = result.Resolved
 		latest.Changes = changes

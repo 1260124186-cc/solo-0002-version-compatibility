@@ -8,11 +8,12 @@ import (
 )
 
 type Event struct {
-	Sequence uint64    `json:"sequence"`
-	Kind     string    `json:"kind"`
-	EntityID string    `json:"entity_id"`
-	Action   string    `json:"action"`
-	At       time.Time `json:"at"`
+	Sequence uint64         `json:"sequence"`
+	Kind     string         `json:"kind"`
+	EntityID string         `json:"entity_id"`
+	Action   string         `json:"action"`
+	At       time.Time      `json:"at"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type State struct {
@@ -58,6 +59,21 @@ func (s *State) Record(kind, id, action string, at time.Time) {
 		EntityID: id,
 		Action:   action,
 		At:       at,
+	})
+	if len(s.Events) > 10000 {
+		s.Events = s.Events[len(s.Events)-10000:]
+	}
+}
+
+func (s *State) RecordLifecycle(id, action, from, to, reason string, at time.Time) {
+	s.Revision++
+	s.Events = append(s.Events, Event{
+		Sequence: s.Revision,
+		Kind:     "component",
+		EntityID: id,
+		Action:   action,
+		At:       at,
+		Metadata: map[string]any{"from": from, "to": to, "reason": reason},
 	})
 	if len(s.Events) > 10000 {
 		s.Events = s.Events[len(s.Events)-10000:]
