@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20
@@ -36,6 +38,11 @@ func readState(path string) (*State, error) {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
+	}
+	// Change sets were added after the schema 1 baseline; backfill the
+	// collection for states written by older builds.
+	if state.ChangeSets == nil {
+		state.ChangeSets = make(map[string]domain.ChangeSet)
 	}
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)

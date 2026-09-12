@@ -105,6 +105,25 @@
         "resolution",
         "repository"
       ]
+    },
+    {
+      "id": "change-sets",
+      "name": "多环境变更集合",
+      "entry": "POST /api/v1/change-sets/{id}/apply",
+      "steps": [
+        "引用多个环境的现有方案组成集合",
+        "整体校验并记录方案、环境与目录修订依据",
+        "依据全部新鲜时单事务原子应用，任一过期则整组拒绝"
+      ],
+      "success": "全部方案与环境状态在一次提交中一起更新",
+      "failure": "任一依据过期返回 409 且无部分应用",
+      "verification": "真实 HTTP 验证整组校验、过期拒绝、原子应用、取消隔离与单方案操作失效",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "repository"
+      ]
     }
   ]
 }

@@ -165,15 +165,106 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def change_sets(api):
+    populate(api)
+    first_env = api.request("POST", "/api/v1/environments", {"id": "canary", "name": "金丝雀", "roots": {"render-engine": "1.0.0"}}, 201)
+    second_env = api.request("POST", "/api/v1/environments", {"id": "stable", "name": "稳定", "roots": {"render-engine": "1.0.0"}}, 201)
+    require(first_env["revision"] == 1 and second_env["revision"] == 1, "initial environment revisions are wrong")
+    body = {"base_revision": 1, "roots": {"render-engine": "2.0.0"}, "reason": "批量升级"}
+    first_plan = api.request("POST", "/api/v1/plans", {**body, "environment_id": "canary"}, 201)
+    second_plan = api.request("POST", "/api/v1/plans", {**body, "environment_id": "stable"}, 201)
+    draft_plan = api.request("POST", "/api/v1/plans", {**body, "environment_id": "canary"}, 201)
+    first, second, draft = first_plan["id"], second_plan["id"], draft_plan["id"]
+
+    # Input boundaries: at least two plans, no duplicate entries, no unknown plans.
+    api.request("POST", "/api/v1/change-sets", {"plan_ids": [first], "reason": "批量升级"}, 400)
+    api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, first], "reason": "批量升级"}, 400)
+    api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, "plan-missing"], "reason": "批量升级"}, 404)
+    # The same environment must not appear twice.
+    api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, draft], "reason": "批量升级"}, 400)
+    # Every referenced plan must still be usable.
+    api.request("POST", "/api/v1/plans/" + draft + "/cancel", {"revision": 1})
+    api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, draft], "reason": "批量升级"}, 409)    # Draft sets cannot be validated while a member plan is still draft.
+    created = api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, second], "reason": "批量升级"}, 201)
+    set_path = "/api/v1/change-sets/" + created["id"]
+    require(created["state"] == "draft" and len(created["entries"]) == 2, "change set was not created as draft")
+    api.request("POST", set_path + "/validate", {"revision": 1}, 409)
+
+    # Each member plan is validated independently first, then the set records
+    # the plan/environment/catalog revision basis.
+    first_ready = api.request("POST", "/api/v1/plans/" + first + "/validate", {"revision": 1})
+    second_ready = api.request("POST", "/api/v1/plans/" + second + "/validate", {"revision": 1})
+    # Validating a member plan invalidates a draft set that already bundled it.
+    require(api.request("GET", set_path)["state"] == "invalidated", "set did not invalidate when a member plan changed")
+    recreated = api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, second], "reason": "批量升级"}, 201)
+    set_path = "/api/v1/change-sets/" + recreated["id"]
+    ready_set = api.request("POST", set_path + "/validate", {"revision": 1})
+    require(ready_set["state"] == "ready", "change set did not become ready")
+    entries = {entry["environment_id"]: entry for entry in ready_set["entries"]}
+    require(entries["canary"]["plan_revision"] == first_ready["revision"] == 2, "plan revision basis missing")
+    require(entries["canary"]["environment_revision"] == 1 and entries["canary"]["catalog_revision"] >= 1, "environment or catalog basis missing")
+
+    # A stale catalog basis rejects the whole group without touching anything.
+    release(api, "atlas-core", "3.0.0")
+    api.request("POST", set_path + "/apply", {"revision": ready_set["revision"]}, 409)
+    require(api.request("GET", "/api/v1/environments/canary")["revision"] == 1, "stale set partially applied")
+    require(api.request("GET", set_path)["state"] == "ready", "rejected apply changed the set")
+
+    # Re-validate plans and set; an invalidated set is terminal, so a new set
+    # is created once every member basis is fresh again.
+    first_ready = api.request("POST", "/api/v1/plans/" + first + "/validate", {"revision": first_ready["revision"]})
+    second_ready = api.request("POST", "/api/v1/plans/" + second + "/validate", {"revision": second_ready["revision"]})
+    require(api.request("GET", set_path)["state"] == "invalidated", "set did not invalidate on member re-validation")
+    recreated = api.request("POST", "/api/v1/change-sets", {"plan_ids": [first, second], "reason": "批量升级"}, 201)
+    set_path = "/api/v1/change-sets/" + recreated["id"]
+    ready_set = api.request("POST", set_path + "/validate", {"revision": 1})
+    applied = api.request("POST", set_path + "/apply", {"revision": ready_set["revision"]})
+    require(applied["change_set"]["state"] == "applied", "change set was not applied")
+    require(len(applied["applications"]) == 2, "group application did not cover both plans")
+    for env_id in ("canary", "stable"):
+        env = api.request("GET", "/api/v1/environments/" + env_id)
+        require(env["revision"] == 2 and env["resolved"]["atlas-core"] == "2.0.0", f"environment {env_id} was not upgraded")
+    require(api.request("GET", "/api/v1/plans/" + first)["state"] == "applied", "member plan state did not update")
+    api.request("POST", set_path + "/apply", {"revision": applied["change_set"]["revision"]}, 409)
+
+    # Cancelling a set leaves its independent plans untouched.
+    cancel_body = {"base_revision": 2, "roots": {"render-engine": "1.0.0"}, "reason": "回滚预演"}
+    rollback_first = api.request("POST", "/api/v1/plans", {**cancel_body, "environment_id": "canary"}, 201)
+    rollback_second = api.request("POST", "/api/v1/plans", {**cancel_body, "environment_id": "stable"}, 201)
+    api.request("POST", "/api/v1/plans/" + rollback_first["id"] + "/validate", {"revision": 1})
+    api.request("POST", "/api/v1/plans/" + rollback_second["id"] + "/validate", {"revision": 1})
+    cancellable = api.request("POST", "/api/v1/change-sets", {"plan_ids": [rollback_first["id"], rollback_second["id"]], "reason": "回滚预演"}, 201)
+    cancel_path = "/api/v1/change-sets/" + cancellable["id"]
+    ready_cancel = api.request("POST", cancel_path + "/validate", {"revision": 1})
+    cancelled = api.request("POST", cancel_path + "/cancel", {"revision": ready_cancel["revision"]})
+    require(cancelled["state"] == "cancelled", "set cancellation failed")
+    require(api.request("GET", "/api/v1/plans/" + rollback_first["id"])["state"] == "ready", "cancelling the set cancelled a standalone plan")
+
+    # A single-plan application invalidates any other live set referencing it.
+    solo = api.request("POST", "/api/v1/plans", {**cancel_body, "environment_id": "canary"}, 201)
+    solo_ready = api.request("POST", "/api/v1/plans/" + solo["id"] + "/validate", {"revision": 1})
+    grouped = api.request("POST", "/api/v1/change-sets", {"plan_ids": [solo["id"], rollback_second["id"]], "reason": "共享方案"}, 201)
+    grouped_path = "/api/v1/change-sets/" + grouped["id"]
+    api.request("POST", grouped_path + "/validate", {"revision": 1})
+    api.request("POST", "/api/v1/plans/" + solo["id"] + "/apply", {"revision": solo_ready["revision"]})
+    require(api.request("GET", grouped_path)["state"] == "invalidated", "individual apply did not invalidate the set")
+    require(api.request("GET", grouped_path)["invalidated_reason"], "invalidation reason missing")
+
+    api.stop()
+    api.start()
+    require(api.request("GET", set_path)["state"] == "applied", "applied set lost after restart")
+    require(api.request("GET", "/api/v1/environments/stable")["revision"] == 2, "environment revision lost after restart")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "change-sets"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade, "change-sets": change_sets}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

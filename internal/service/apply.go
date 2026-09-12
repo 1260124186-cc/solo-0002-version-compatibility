@@ -46,6 +46,9 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 		state.Environments[env.ID] = env
 		state.Plans[id] = plan
 		state.Record("plan", id, "applied", at)
+		// A plan applied on its own can no longer be applied by a referencing
+		// live change set, so those sets are explicitly invalidated.
+		invalidateReferencingChangeSets(state, id, "", "plan "+id+" was applied outside the change set", at)
 		result = AppliedResult{Plan: plan, Environment: env}
 		return nil
 	})
@@ -70,6 +73,9 @@ func (s *Service) CancelPlan(ctx context.Context, id string, revision uint64) (d
 		plan.UpdatedAt = now()
 		state.Plans[id] = plan
 		state.Record("plan", id, "cancelled", plan.UpdatedAt)
+		// Cancelling a member plan on its own makes any live set that bundled
+		// it un-appliable.
+		invalidateReferencingChangeSets(state, id, "", "plan "+id+" was cancelled outside the change set", plan.UpdatedAt)
 		result = plan
 		return nil
 	})

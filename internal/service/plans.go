@@ -19,7 +19,7 @@ func (s *Service) CreatePlan(ctx context.Context, input domain.PlanInput) (domai
 	if input.BaseRevision == 0 {
 		return domain.Plan{}, domain.Invalid("base_revision must be positive")
 	}
-	id, err := freshID()
+	id, err := freshPlanID()
 	if err != nil {
 		return domain.Plan{}, err
 	}
@@ -139,6 +139,9 @@ func (s *Service) ValidatePlan(ctx context.Context, id string, revision uint64) 
 		latest.UpdatedAt = now()
 		current.Plans[id] = latest
 		current.Record("plan", id, "validated", latest.UpdatedAt)
+		// Validating a member plan outside the set moves its revision and
+		// therefore invalidates any live set that referenced it.
+		invalidateReferencingChangeSets(current, id, "", "plan "+id+" was validated outside the change set", latest.UpdatedAt)
 		updated = latest
 		return nil
 	})

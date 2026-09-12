@@ -8,13 +8,13 @@ import (
 )
 
 func validateState(s *State) error {
-	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil {
+	if s.Schema != 1 || s.Catalog.Components == nil || s.Catalog.Releases == nil || s.Environments == nil || s.Plans == nil || s.ChangeSets == nil {
 		return fmt.Errorf("unsupported schema or missing collections")
 	}
 	if s.Catalog.Revision > s.Revision || len(s.Catalog.Components) > domain.MaxComponents {
 		return fmt.Errorf("invalid catalog revision or component count")
 	}
-	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.Events) > 10000 {
+	if len(s.Environments) > 200 || len(s.Plans) > 5000 || len(s.ChangeSets) > domain.MaxChangeSets || len(s.Events) > 10000 {
 		return fmt.Errorf("persisted collection exceeds capacity")
 	}
 	for id, component := range s.Catalog.Components {
@@ -88,6 +88,55 @@ func validateState(s *State) error {
 			}
 		default:
 			return fmt.Errorf("invalid plan state")
+		}
+	}
+	for id, set := range s.ChangeSets {
+		if id != set.ID || set.Revision == 0 {
+			return fmt.Errorf("invalid change set identity or revision")
+		}
+		if err := domain.ValidateText(set.Reason, "reason", 1, 1000); err != nil {
+			return err
+		}
+		switch set.State {
+		case domain.Draft, domain.Ready, domain.Applied, domain.Cancelled, domain.Invalidated:
+		default:
+			return fmt.Errorf("invalid change set state")
+		}
+		if len(set.Entries) < domain.MinChangeSetPlans || len(set.Entries) > domain.MaxChangeSetPlans {
+			return fmt.Errorf("change set references an invalid number of plans")
+		}
+		seenPlans := make(map[string]bool, len(set.Entries))
+		seenEnvs := make(map[string]bool, len(set.Entries))
+		for _, entry := range set.Entries {
+			if seenPlans[entry.PlanID] || seenEnvs[entry.EnvironmentID] {
+				return fmt.Errorf("change set duplicates a plan or environment")
+			}
+			seenPlans[entry.PlanID] = true
+			seenEnvs[entry.EnvironmentID] = true
+			plan, ok := s.Plans[entry.PlanID]
+			if !ok || plan.EnvironmentID != entry.EnvironmentID {
+				return fmt.Errorf("change set entry does not match its plan")
+			}
+			env, ok := s.Environments[entry.EnvironmentID]
+			if !ok {
+				return fmt.Errorf("change set references a missing environment")
+			}
+			// A draft set, and a set invalidated while still a draft, never
+			// recorded a revision basis (validation fills that in).
+			if set.State == domain.Draft || (set.State == domain.Invalidated && entry.PlanRevision == 0) {
+				if entry.PlanRevision != 0 || entry.EnvironmentRevision != 0 || entry.CatalogRevision != 0 {
+					return fmt.Errorf("draft change set must not record a revision basis")
+				}
+				continue
+			}
+			if entry.PlanRevision == 0 || entry.PlanRevision > plan.Revision ||
+				entry.EnvironmentRevision == 0 || entry.EnvironmentRevision > env.Revision ||
+				entry.CatalogRevision == 0 || entry.CatalogRevision > s.Catalog.Revision {
+				return fmt.Errorf("change set entry references an invalid revision")
+			}
+		}
+		if set.State == domain.Invalidated && set.InvalidatedReason == "" {
+			return fmt.Errorf("invalidated change set is missing its reason")
 		}
 	}
 	var previous uint64

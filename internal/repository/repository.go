@@ -66,8 +66,23 @@ func (r *Repository) Update(ctx context.Context, mutate func(*State) error) erro
 	if err := mutate(candidate); err != nil {
 		return err
 	}
-	if candidate.Revision != r.state.Revision+1 {
-		return fmt.Errorf("mutation must record exactly one event")
+	// A commit may record several events atomically (for example a change-set
+	// application updates multiple plans and environments together), but every
+	// revision step must be backed by exactly one event. The tail check stays
+	// valid even when the bounded event history was trimmed during the commit.
+	if candidate.Revision <= r.state.Revision {
+		return fmt.Errorf("mutation must advance the state revision")
+	}
+	delta := int(candidate.Revision - r.state.Revision)
+	tail := delta
+	if tail > len(candidate.Events) {
+		tail = len(candidate.Events)
+	}
+	start := candidate.Revision - uint64(tail) + 1
+	for i, event := range candidate.Events[len(candidate.Events)-tail:] {
+		if event.Sequence != start+uint64(i) {
+			return fmt.Errorf("mutation must record one event per revision step")
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err

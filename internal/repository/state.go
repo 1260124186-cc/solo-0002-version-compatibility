@@ -21,6 +21,7 @@ type State struct {
 	Catalog      domain.Catalog                `json:"catalog"`
 	Environments map[string]domain.Environment `json:"environments"`
 	Plans        map[string]domain.Plan        `json:"plans"`
+	ChangeSets   map[string]domain.ChangeSet   `json:"change_sets"`
 	Events       []Event                       `json:"events"`
 }
 
@@ -33,6 +34,7 @@ func NewState() *State {
 		},
 		Environments: make(map[string]domain.Environment),
 		Plans:        make(map[string]domain.Plan),
+		ChangeSets:   make(map[string]domain.ChangeSet),
 		Events:       make([]Event, 0),
 	}
 }

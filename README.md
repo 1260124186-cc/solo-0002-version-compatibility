@@ -67,16 +67,31 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
+| GET、POST /change-sets | 分页查询、创建变更集合 |
+| GET /change-sets/{id} | 查看集合及其修订依据 |
+| POST /change-sets/{id}/validate | 校验整组方案并记录修订依据 |
+| POST /change-sets/{id}/apply | 依据全部未过期时原子应用整组 |
+| POST /change-sets/{id}/cancel | 取消集合但不取消其中的独立方案 |
 | GET /events | 按序号增量读取变更事件 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选；变更集合可按 `state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+
+## 变更集合
+
+跨环境的兼容性调整可以打包成一次整体操作。`POST /api/v1/change-sets` 接受 `plan_ids`（2–200 个现有方案）和 `reason`：同一环境最多出现一次，已应用或已取消的方案不能入集。新建的集合为 `draft`，其条目只记录 `plan_id` 与 `environment_id`。
+
+1. `POST /api/v1/change-sets/{id}/validate`（发送当前 `revision`）要求集合中每个方案都处于 `ready`，逐一确认方案仍可用（环境与目录修订号未漂移、选择集仍有效），并在条目中记录方案、环境和目录三项修订依据，集合变为 `ready`。
+2. `POST /api/v1/change-sets/{id}/apply` 在单个事务中复核整组依据：只要其中任何一个方案、环境或目录修订号过期，整组操作被 409 拒绝，不修改任何状态。全部依据新鲜时，所有方案与环境在同一次持久化提交中一起更新。
+3. `POST /api/v1/change-sets/{id}/cancel` 只取消集合本身，集合中的独立方案保持原状，仍可通过单方案入口操作。
+
+集合状态为 `draft`、`ready`、`applied`、`cancelled` 与 `invalidated`。当集合中的方案被单独验证、应用或取消时，引用它的存活（draft/ready）集合会在同一事务中显式转为 `invalidated` 并记录 `invalidated_reason`；`invalidated` 为终态，需要重建集合。原有的单方案 validate/apply/cancel 入口全部保留，其修订号与乐观并发规则不变。
 
 ## 约束及失败行为
 
 - 仅支持稳定 `major.minor.patch`，每段最大 4294967295，无前导零。支持 `*`、精确版本、`>=`、`<=`、`>`、`<`、`^`、`~` 及空格分隔的交集。
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
-- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境、5000 个方案和 1000 个变更集合；每个集合引用 2–200 个方案。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
@@ -94,9 +109,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py change-sets
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消，以及变更集合的整组校验、任一依据过期拒绝、原子应用、集合取消不影响独立方案和单方案操作导致集合失效。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
