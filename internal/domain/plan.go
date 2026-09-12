@@ -25,6 +25,7 @@ type Plan struct {
 	Roots           map[string]string `json:"roots"`
 	Resolved        map[string]string `json:"resolved"`
 	Changes         []Change          `json:"changes"`
+	RootChanges     []Change          `json:"root_changes"`
 	State           string            `json:"state"`
 	Reason          string            `json:"reason"`
 	CreatedAt       time.Time         `json:"created_at"`

@@ -36,16 +36,38 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 			return err
 		}
 		at := now()
+		beforeRevision := env.Revision
+		beforeRoots := domain.CopyStrings(env.Roots)
+		rootChanges := domain.RootDiff(beforeRoots, plan.Roots)
 		env.Roots = domain.CopyStrings(plan.Roots)
 		env.Resolved = domain.CopyStrings(plan.Resolved)
 		env.Revision++
 		env.UpdatedAt = at
 		plan.State = domain.Applied
+		plan.RootChanges = rootChanges
 		plan.Revision++
 		plan.UpdatedAt = at
 		state.Environments[env.ID] = env
 		state.Plans[id] = plan
-		state.Record("plan", id, "applied", at)
+		if len(rootChanges) > 0 {
+			timeline := state.RootTimelines[env.ID]
+			timeline.EnvironmentID = env.ID
+			timeline.Entries = append(timeline.Entries, domain.RootTimelineEntry{
+				Sequence:       uint64(len(timeline.Entries) + 1),
+				Type:           domain.RootTimelineApplied,
+				At:             at,
+				PlanID:         plan.ID,
+				Reason:         plan.Reason,
+				EventSequence:  state.Revision + 1,
+				BeforeRevision: beforeRevision,
+				AfterRevision:  env.Revision,
+				Before:         beforeRoots,
+				After:          domain.CopyStrings(env.Roots),
+				RootChanges:    rootChanges,
+			})
+			state.RootTimelines[env.ID] = timeline
+		}
+		state.Record("environment", env.ID, "applied", at)
 		result = AppliedResult{Plan: plan, Environment: env}
 		return nil
 	})

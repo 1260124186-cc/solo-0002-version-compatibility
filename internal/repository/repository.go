@@ -69,6 +69,9 @@ func (r *Repository) Update(ctx context.Context, mutate func(*State) error) erro
 	if candidate.Revision != r.state.Revision+1 {
 		return fmt.Errorf("mutation must record exactly one event")
 	}
+	if err := validateState(candidate); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

@@ -141,28 +141,52 @@ def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
     require(env["resolved"]["atlas-core"] == "1.0.0", "initial environment resolution failed")
+    timeline = api.request("GET", "/api/v1/environments/integration/root-timeline")
+    require(timeline["total"] == 1 and timeline["items"][0]["type"] == "created", "new environment did not start its root timeline")
     body = {"environment_id": "integration", "base_revision": 1, "roots": {"render-engine": "2.0.0"}, "reason": "验证新版兼容集合"}
     first = api.request("POST", "/api/v1/plans", body, 201)
     second = api.request("POST", "/api/v1/plans", body, 201)
     path = "/api/v1/plans/" + first["id"]
     ready = api.request("POST", path + "/validate", {"revision": 1})
-    require(ready["state"] == "ready" and len(ready["changes"]) == 2, "plan validation did not generate expected changes")
-    release(api, "atlas-core", "3.0.0")
-    api.request("POST", path + "/apply", {"revision": ready["revision"]}, 409)
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 1, "stale plan mutated environment")
-    ready = api.request("POST", path + "/validate", {"revision": ready["revision"]})
+    require(ready["state"] == "ready" and len(ready["changes"]) == 2 and len(ready["root_changes"]) == 1, "plan validation did not generate expected changes")
     applied = api.request("POST", path + "/apply", {"revision": ready["revision"]})
     require(applied["environment"]["revision"] == 2 and applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "plan application failed")
-    api.request("POST", path + "/apply", {"revision": applied["plan"]["revision"]}, 409)
+    timeline = api.request("GET", "/api/v1/environments/integration/root-timeline")
+    require(len(timeline["items"]) == 2 and timeline["items"][-1]["plan_id"] == first["id"], "root timeline was not applied atomically")
+
+    unchanged_body = {"environment_id": "integration", "base_revision": 2, "roots": {"render-engine": "^2.0.0"}, "reason": "放宽根约束但保持解析集合"}
+    unchanged = api.request("POST", "/api/v1/plans", unchanged_body, 201)
+    unchanged_path = "/api/v1/plans/" + unchanged["id"]
+    unchanged_ready = api.request("POST", unchanged_path + "/validate", {"revision": 1})
+    require(unchanged_ready["changes"] == [] and len(unchanged_ready["root_changes"]) == 1, "unchanged resolution hid the root constraint change")
+    unchanged_applied = api.request("POST", unchanged_path + "/apply", {"revision": unchanged_ready["revision"]})
+    require(unchanged_applied["environment"]["resolved"]["atlas-core"] == "2.0.0", "constraint-only plan changed the resolved set")
+    timeline = api.request("GET", "/api/v1/environments/integration/root-timeline?plan_id=" + unchanged["id"])
+    require(timeline["total"] == 1 and timeline["items"][0]["before"]["render-engine"] == "2.0.0", "plan-specific root diff is unavailable")
+
+    stale_body = {"environment_id": "integration", "base_revision": 3, "roots": {"render-engine": "*"}, "reason": "验证目录过期后的重新解析"}
+    stale = api.request("POST", "/api/v1/plans", stale_body, 201)
+    stale_path = "/api/v1/plans/" + stale["id"]
+    ready = api.request("POST", stale_path + "/validate", {"revision": 1})
+    release(api, "atlas-core", "3.0.0")
+    api.request("POST", stale_path + "/apply", {"revision": ready["revision"]}, 409)
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 3, "stale plan mutated environment")
+    ready = api.request("POST", stale_path + "/validate", {"revision": ready["revision"]})
+    applied = api.request("POST", stale_path + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 4 and applied["environment"]["resolved"]["atlas-core"] == "3.0.0", "plan application failed")
+    api.request("POST", path + "/apply", {"revision": 2}, 409)
     other = "/api/v1/plans/" + second["id"]
     api.request("POST", other + "/validate", {"revision": 1}, 409)
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
-    api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdraw", {}, 409)
+    api.request("POST", "/api/v1/components/atlas-core/releases/3.0.0/withdraw", {}, 409)
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 4, "environment revision lost after restart")
+    timeline = api.request("GET", "/api/v1/environments/integration/root-timeline")
+    require(len(timeline["items"]) == 4, "root timeline lost after restart")
+    require(timeline["items"][1]["event_sequence"] != 0 and timeline["items"][1]["event_sequence"] == timeline["items"][2]["event_sequence"] - 1, "root timeline is not linked to atomic environment events")
 
 
 def main():

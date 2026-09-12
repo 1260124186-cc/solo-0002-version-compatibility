@@ -38,6 +38,18 @@ func (s *Service) CreateEnvironment(ctx context.Context, input domain.Environmen
 			return domain.Limit("environment capacity reached")
 		}
 		current.Environments[input.ID] = env
+		current.RootTimelines[input.ID] = domain.RootTimeline{
+			EnvironmentID: input.ID,
+			Entries: []domain.RootTimelineEntry{{
+				Sequence:      1,
+				Type:          domain.RootTimelineCreated,
+				At:            at,
+				EventSequence: current.Revision + 1,
+				AfterRevision: env.Revision,
+				After:         domain.CopyStrings(env.Roots),
+				RootChanges:   domain.RootDiff(nil, env.Roots),
+			}},
+		}
 		current.Record("environment", input.ID, "created", at)
 		return nil
 	})
@@ -66,4 +78,29 @@ func (s *Service) Environment(ctx context.Context, id string) (domain.Environmen
 		return env, domain.Missing("environment", id)
 	}
 	return env, nil
+}
+
+func (s *Service) RootTimeline(ctx context.Context, id, planID string) (domain.RootTimeline, error) {
+	state, err := s.repo.Snapshot(ctx)
+	if err != nil {
+		return domain.RootTimeline{}, err
+	}
+	timeline, exists := state.RootTimelines[id]
+	if !exists {
+		return timeline, domain.Missing("environment", id)
+	}
+	if planID != "" {
+		plan, exists := state.Plans[planID]
+		if !exists || plan.EnvironmentID != id {
+			return timeline, domain.Missing("plan", planID)
+		}
+		entries := make([]domain.RootTimelineEntry, 0)
+		for _, entry := range timeline.Entries {
+			if entry.PlanID == planID {
+				entries = append(entries, entry)
+			}
+		}
+		timeline.Entries = entries
+	}
+	return timeline, nil
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const maxStateBytes = 64 << 20
@@ -40,7 +41,49 @@ func readState(path string) (*State, error) {
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)
 	}
+	if state.Schema < CurrentSchema {
+		migrateState(&state)
+		if err := validateState(&state); err != nil {
+			return nil, fmt.Errorf("invalid migrated state: %w", err)
+		}
+		if err := writeState(path, &state); err != nil {
+			return nil, fmt.Errorf("persist state migration: %w", err)
+		}
+	}
 	return &state, nil
+}
+
+func migrateState(s *State) {
+	if s.RootTimelines == nil {
+		s.RootTimelines = make(map[string]domain.RootTimeline)
+	}
+	if s.Schema == 1 {
+		at := time.Now().UTC()
+		for _, id := range domain.SortedKeys(s.Environments) {
+			if _, exists := s.RootTimelines[id]; exists {
+				continue
+			}
+			env := s.Environments[id]
+			s.RootTimelines[id] = domain.RootTimeline{
+				EnvironmentID: id,
+				Entries: []domain.RootTimelineEntry{{
+					Sequence:      1,
+					Type:          domain.RootTimelineBootstrap,
+					At:            at,
+					AfterRevision: env.Revision,
+					After:         domain.CopyStrings(env.Roots),
+					RootChanges:   make([]domain.Change, 0),
+				}},
+			}
+		}
+		for id, plan := range s.Plans {
+			if plan.RootChanges == nil {
+				plan.RootChanges = make([]domain.Change, 0)
+				s.Plans[id] = plan
+			}
+		}
+		s.Schema = CurrentSchema
+	}
 }
 
 func writeState(path string, state *State) error {

@@ -49,7 +49,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 2. `POST /api/v1/plans/{id}/apply`，发送当前方案修订号。成功同时返回更新后的 `plan` 与 `environment`。
 3. 若不再需要，可对 draft 或 ready 方案调用 `/cancel`。已经应用的方案不能取消，应建立另一个方案调整环境。
 
-根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
+根依赖始终表示完整期望集合，不是增量补丁。方案验证后还会返回独立的 `root_changes`，它比较应用前后的根约束；`changes` 仍只比较解析后的版本集合。即使根约束变化最终没有改变解析集合，`root_changes` 也会记录这次约束变化。应用成功后，根约束变化会原子追加到该环境的根依赖时间线；根约束完全相同的方案不会产生新的时间线条目。可通过 `GET /api/v1/environments/{id}/root-timeline` 查看时间线，加 `plan_id={plan}` 可只查看某次方案应用产生的根依赖差异。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
 ## 接口索引
 
@@ -62,6 +62,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /resolve | 求解根依赖和传递依赖 |
 | GET、POST /environments | 分页查询、创建环境并求解初始集合 |
 | GET /environments/{id} | 查看环境根依赖、解析集合和修订号 |
+| GET /environments/{id}/root-timeline | 查看根依赖演进时间线，可用 plan_id 筛选某次应用 |
 | GET、POST /plans | 分页筛选、创建方案 |
 | GET /plans/{id} | 查看方案与变更明细 |
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
@@ -69,7 +70,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
 | GET /events | 按序号增量读取变更事件 |
 
-集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
+集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选；根依赖时间线可用 `plan_id` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
 
 ## 约束及失败行为
 
@@ -86,7 +87,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 服务使用进程独占锁，两个进程不能共享同一数据目录。状态在 `state.json` 中保存，写入临时文件并执行 fsync 后原子替换。替换成功才更新内存；目录 fsync 尽力执行，因此极端断电持久性仍取决于宿主文件系统。数据上限 64 MiB。
 
-启动会校验 schema、引用关系、选择结果与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。状态格式当前为 schema 1，不包含跨版本迁移机制。
+启动会校验 schema、引用关系、选择结果、根依赖时间线与事件序号，损坏数据会使服务拒绝启动。可在服务停止后复制整个数据目录作备份，并在停止状态下恢复。schema 1 状态首次由当前版本打开时会迁移到 schema 2：迁移只根据当时 `state.json` 中的根依赖建立 `type="bootstrap"` 的时间线起点，不补造此前方案、时间或变更；该起点的 `event_sequence=0`，新创建环境及后续方案应用才关联真实事件序号。
 
 ## 验证与测试边界
 
@@ -96,7 +97,7 @@ python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、根约束变化但解析集合不变、根依赖时间线、目录过期、环境过期、应用及取消。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 

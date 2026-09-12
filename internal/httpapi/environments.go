@@ -47,3 +47,21 @@ func (a *API) environment(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, http.StatusOK, result)
 }
+
+func (a *API) rootTimeline(w http.ResponseWriter, r *http.Request) {
+	if err := queryOnly(r, "offset", "limit", "plan_id"); err != nil {
+		fail(w, err)
+		return
+	}
+	p, err := pageRequest(r)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	result, err := a.service.RootTimeline(r.Context(), r.PathValue("id"), r.URL.Query().Get("plan_id"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	respond(w, http.StatusOK, pageOf(result.Entries, p))
+}
