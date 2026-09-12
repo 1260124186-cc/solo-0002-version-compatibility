@@ -48,6 +48,18 @@ func (r *Repository) Snapshot(ctx context.Context) (*State, error) {
 // Update serializes writers and makes failure atomic for memory and disk.
 // The mutation function must not retain references after returning.
 func (r *Repository) Update(ctx context.Context, mutate func(*State) error) error {
+	return r.commit(ctx, mutate, true)
+}
+
+// Commit is the same atomic copy-then-replace flow as Update but allows the
+// mutation to record several events in one transaction (a batch import).
+// Nothing is persisted unless mutate succeeds, so a rejected batch leaves no
+// partial state behind.
+func (r *Repository) Commit(ctx context.Context, mutate func(*State) error) error {
+	return r.commit(ctx, mutate, false)
+}
+
+func (r *Repository) commit(ctx context.Context, mutate func(*State) error, exactlyOne bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -66,8 +78,12 @@ func (r *Repository) Update(ctx context.Context, mutate func(*State) error) erro
 	if err := mutate(candidate); err != nil {
 		return err
 	}
-	if candidate.Revision != r.state.Revision+1 {
-		return fmt.Errorf("mutation must record exactly one event")
+	delta := candidate.Revision - r.state.Revision
+	if delta < 1 || exactlyOne && delta != 1 {
+		return fmt.Errorf("mutation must record %s", oneOrMore(exactlyOne))
+	}
+	if err := validateState(candidate); err != nil {
+		return fmt.Errorf("invalid state: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -77,6 +93,13 @@ func (r *Repository) Update(ctx context.Context, mutate func(*State) error) erro
 	}
 	r.state = candidate
 	return nil
+}
+
+func oneOrMore(exactlyOne bool) string {
+	if exactlyOne {
+		return "exactly one event"
+	}
+	return "at least one event"
 }
 
 func (r *Repository) Close() error {

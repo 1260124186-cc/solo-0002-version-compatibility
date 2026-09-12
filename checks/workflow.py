@@ -165,15 +165,111 @@ def upgrade(api):
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 2, "environment revision lost after restart")
 
 
+def batch_imports(api):
+    manifest = {"entries": [
+        {"component_id": "compute-core", "name": "计算核心", "version": "1.0.0", "requires": {}},
+        {"component_id": "render-unit", "name": "渲染单元", "version": "1.0.0",
+         "requires": {"compute-core": "^1.0.0"}},
+        {"component_id": "render-unit", "version": "1.1.0",
+         "requires": {"compute-core": ">=1.0.0 <2.0.0"}},
+    ]}
+
+    # A preview never mutates the catalog.
+    preview = api.request("POST", "/api/v1/imports", manifest, 201)
+    import_id = preview["import"]["id"]
+    require(preview["created"] is True and preview["import"]["state"] == "pending", "import was not pending")
+    require(preview["import"]["summary"] == {"entries": 3, "create_components": 2,
+             "add_releases": 1, "already_present": 0, "errors": 0}, "import summary is wrong")
+    actions = [(e["index"], e["action"]) for e in preview["import"]["entries"]]
+    require(actions == [(0, "create_component_and_release"), (1, "create_component_and_release"),
+                        (2, "add_release")], "preview actions are wrong")
+    catalog = api.request("GET", "/api/v1/components")
+    require(catalog["total"] == 0 and catalog["catalog_revision"] == 0, "preview changed the catalog")
+    api.request("GET", f"/api/v1/imports/{import_id}")
+
+    # Restart between preview and confirm: status must survive.
+    api.stop()
+    api.start()
+    require(api.request("GET", f"/api/v1/imports/{import_id}")["state"] == "pending",
+            "pending import did not survive restart")
+
+    # Idempotent resubmission (reordered entries and requirement keys) before confirm.
+    reordered = {"entries": [manifest["entries"][2], manifest["entries"][0], manifest["entries"][1]]}
+    replay = api.request("POST", "/api/v1/imports", reordered)
+    require(replay["created"] is False and replay["import"]["id"] == import_id,
+            "identical pending manifest created a second import")
+
+    completed = api.request("POST", f"/api/v1/imports/{import_id}/confirm", {})
+    require(completed["state"] == "completed", "confirm did not complete the import")
+    require(completed["created_components"] == ["compute-core", "render-unit"], "created components wrong")
+    require(completed["added_releases"] == ["compute-core@1.0.0", "render-unit@1.0.0",
+                                            "render-unit@1.1.0"], "added releases wrong")
+    releases = api.request("GET", "/api/v1/components/render-unit/releases")["items"]
+    require([r["version"] for r in releases] == ["1.1.0", "1.0.0"], "batch releases missing")
+
+    # Repeating the completed manifest or its confirmation creates nothing.
+    again = api.request("POST", "/api/v1/imports", manifest)
+    require(again["created"] is False and again["import"]["id"] == import_id,
+            "completed manifest was reimported")
+    require(api.request("POST", f"/api/v1/imports/{import_id}/confirm", {})["state"] == "completed",
+            "repeat confirmation was not idempotent")
+
+    # Invalid batch: every error is attached to its original entry index.
+    bad = api.request("POST", "/api/v1/imports", {"entries": [
+        {"component_id": "BadID", "name": "x", "version": "1.0.0", "requires": {}},
+        {"component_id": "compute-core", "version": "nope", "requires": {}},
+        {"component_id": "new-lib", "name": "新库", "version": "1.0.0",
+         "requires": {"ghost-lib": "*"}},
+        {"component_id": "compute-core", "name": "改名", "version": "1.0.0", "requires": {}},
+    ]}, 201)
+    bad_id = bad["import"]["id"]
+    require(bad["import"]["state"] == "failed" and bad["import"]["summary"]["errors"] == 4,
+            "invalid batch was not stored as failed")
+    indexed = {e["index"]: [x["field"] for x in e["errors"]]
+               for e in bad["import"]["entries"] if e["errors"]}
+    require(indexed == {0: ["component_id"], 1: ["version"], 2: ["requires.ghost-lib"],
+                        3: ["name"]}, f"errors are not attributed per entry: {indexed}")
+    # Nothing from the failed batch reached the catalog.
+    api.request("GET", "/api/v1/components/new-lib", expected=404)
+    rejected = api.request("POST", f"/api/v1/imports/{bad_id}/confirm", {}, expected=409)
+    require(rejected["error"]["code"] == "conflict", "failed import could be confirmed")
+
+    # A valid preview can be rejected at confirm by a concurrent catalog
+    # change; the rejection is atomic (no half batch) and durable.
+    racy = api.request("POST", "/api/v1/imports", {"entries": [
+        {"component_id": "render-unit", "version": "2.0.0", "requires": {"compute-core": "^2.0.0"}},
+    ]}, 201)
+    racy_id = racy["import"]["id"]
+    require(racy["import"]["state"] == "pending", "racy import was not pending")
+    release(api, "render-unit", "2.0.0", {"compute-core": "^1.0.0"})
+    rejected_confirm = api.request("POST", f"/api/v1/imports/{racy_id}/confirm", {}, expected=422)
+    require(rejected_confirm["error"]["code"] == "import_failed", "racy confirm was not rejected")
+    require(rejected_confirm["import"]["state"] == "failed"
+            and rejected_confirm["import"]["entries"][0]["errors"][0]["field"] == "requires",
+            "racy confirm did not report the immutable release conflict")
+    stored = api.request("GET", f"/api/v1/imports/{racy_id}")
+    require(stored["state"] == "failed", "racy failure did not persist")
+
+    # Restart keeps every terminal state and imported catalog data.
+    api.stop()
+    api.start()
+    states = {item["id"]: item["state"] for item in api.request("GET", "/api/v1/imports")["items"]}
+    require(states[import_id] == "completed" and states[bad_id] == "failed"
+            and states[racy_id] == "failed", "import states were lost across restart")
+    result = api.request("POST", "/api/v1/resolve", {"roots": {"render-unit": "*"}})
+    require(result["resolved"]["render-unit"] == "2.0.0", "imported catalog does not solve after restart")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade"))
+    parser.add_argument("workflow", choices=("catalog", "resolve", "upgrade", "imports"))
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="compat-smoke-") as directory:
         api = RunningService(directory)
         try:
             api.start()
-            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade}[args.workflow](api)
+            {"catalog": catalog, "resolve": resolve, "upgrade": upgrade,
+             "imports": batch_imports}[args.workflow](api)
             print(args.workflow + ": HTTP workflow passed")
         finally:
             api.stop()

@@ -51,6 +51,18 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 
 根依赖始终表示完整期望集合，不是增量补丁。目录变化后，应重新验证 ready 方案。环境变化后，应使用新环境修订号建立新方案。重复应用、旧修订号及正在使用的版本撤回均返回 409。
 
+## 批量依赖导入
+
+外部清单一次带来许多条目时，先提交 `POST /api/v1/imports` 生成**持久化预览**。请求体为 `{"entries":[...]}`，每个条目包含 `component_id`、`version`、`requires`；新组件的第一条目还需 `name`，可带 `description`。依赖可以引用同批次稍后才创建的组件。
+
+响应中的 `entries` 按原始顺序逐行给出组件、版本、依赖、预期动作（`create_component_and_release`、`add_release`、`already_present`）以及**对应到该条目的 `errors`**；`summary` 汇总条目数与各类动作、错误数。预览本身保存在 state.json 中（服务重启后仍可查询），但**不会改动目录修订号**，求解与方案不受影响。
+
+- 全部条目合法时预览状态为 `pending`；存在不合法条目时直接持久化为 `failed`，响应仍为 201（响应体 `state` 标明状态），错误精确定位到原始 `index` 和字段。
+- 对 `pending` 预览调用 `POST /api/v1/imports/{id}/confirm`（空对象请求）。确认时在单个事务内基于当前目录重新执行全部标识、版本、约束、容量和依赖存在性规则：任一条目不合法则整体拒绝（422，导入转为 `failed`，**不留下任何半批数据**）；全部合法才一次性创建组件和版本，状态变为 `completed`。
+- 确认期间目录被其他请求修改（如同版本以不同依赖先被创建）会导致整批失败，修正清单后重新提交即可。
+- **幂等**：相同内容（与条目顺序、依赖键顺序无关）重复提交时，若已有 `pending` 或 `completed` 导入则返回原记录（`created=false`），不重复创建任何组件或版本；重复确认已完成的导入也是无操作。`failed` 清单允许重新提交生成新预览。
+- `GET /api/v1/imports`（可选 `state=pending|completed|failed`）与 `GET /api/v1/imports/{id}` 查询导入状态，重启后同样有效。一次最多 200 个条目，最多保留 500 个导入记录。
+
 ## 接口索引
 
 | 方法与路径（业务路径前缀 /api/v1） | 用途 |
@@ -67,6 +79,9 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 | POST /plans/{id}/validate | 求解并生成可应用方案 |
 | POST /plans/{id}/apply | 检查修订号并应用方案 |
 | POST /plans/{id}/cancel | 取消尚未应用的方案 |
+| GET、POST /imports | 分页筛选（state）、提交批量导入预览 |
+| GET /imports/{id} | 查看导入预览或结果及逐行错误 |
+| POST /imports/{id}/confirm | 整批通过后原子创建，否则整批失败 |
 | GET /events | 按序号增量读取变更事件 |
 
 集合接口接受 `offset` 与 `limit`（默认 50，最大 200），返回 `items`、`total`、`offset`、`limit`。方案可按 `environment_id`、`state` 筛选。事件接口使用 `after`、`limit`、可选 `entity_id`，返回 `next_after` 和 `latest`；事件最多保留最近 10000 条，游标早于保留范围时 `truncated=true`。
@@ -76,7 +91,7 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 - 仅支持稳定 `major.minor.patch`，每段最大 4294967295，无前导零。支持 `*`、精确版本、`>=`、`<=`、`>`、`<`、`^`、`~` 及空格分隔的交集。
 - `^1.2.3` 表示至少 1.2.3 且小于 2.0.0；`^0.2.3` 小于 0.3.0；`^0.0.3` 小于 0.0.4；`~1.2.3` 小于 1.3.0。
 - 不支持预发行标记、构建元数据、通配数字段或 OR 表达式。依赖组件必须已存在，允许先建立组件后逐个添加含环依赖的版本。
-- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。
+- 最多 500 个组件、每组件 200 个版本、每个根集合或版本 32 条依赖；一次求解最多涉及 128 个组件。最多 200 个环境和 5000 个方案。批量导入单次最多 200 个条目，最多保留 500 个导入记录。
 - 组件按标识字典序求解，候选版本按降序尝试，发生约束冲突时回溯。不保证全局最少变更；升级可能间接引入降级，必须查看方案差异。
 - JSON 请求上限 64 KiB，拒绝未知字段、重复键、无效 UTF-8、非对象请求及额外 JSON 值。最多同时处理 32 个请求。
 - 错误格式为 `{"error":{"code":"...","detail":"...","conflicts":[]}}`，`conflicts` 仅无解时出现，最多给出 8 条搜索中遇到的约束证据，并非完整不可满足证明。
@@ -94,9 +109,10 @@ curl -s http://127.0.0.1:8092/api/v1/environments -H 'Content-Type: application/
 python3 checks/workflow.py catalog
 python3 checks/workflow.py resolve
 python3 checks/workflow.py upgrade
+python3 checks/workflow.py imports
 ```
 
-这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。
+这些是有界运行检查：启动临时 HTTP 服务、构造最小输入、验证公开 API 输出并清理数据。覆盖持久化重启、输入拒绝、版本撤回、回溯、兼容环、无解、方案验证、目录过期、环境过期、应用及取消。批量导入检查覆盖逐行预览错误、预览与目录隔离、重启状态保持、整批原子拒绝、并发修改及内容幂等。
 
 测试故意延后：初始化基线采用 `testing=deferred`，不附单元测试、测试夹具或 E2E 测试文件，也不声明 test_command。后续工程测试任务负责补充细粒度边界、并发竞争和故障注入测试。当前冒烟检查不替代完整测试套件。
 
@@ -107,7 +123,7 @@ python3 checks/workflow.py upgrade
 - `internal/domain`：实体、校验及状态规则。
 - `internal/repository`：状态副本、持久化、独占锁和启动校验。
 - `internal/resolution`：回溯求解、约束证据及版本差异。
-- `internal/service`：组件、环境、方案与事件流程。
+- `internal/service`：组件、环境、方案、批量导入与事件流程。
 - `internal/httpapi`：HTTP 路由、请求边界及响应。
 - `internal/config`：环境配置。
 - `checks`：公开 HTTP 运行检查。

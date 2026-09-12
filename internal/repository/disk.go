@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20
@@ -36,6 +38,11 @@ func readState(path string) (*State, error) {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("state has trailing data")
+	}
+	// State files written before batch imports lack the imports collection;
+	// normalize in place so the schema version stays unchanged.
+	if state.Imports == nil {
+		state.Imports = make(map[string]domain.Import)
 	}
 	if err := validateState(&state); err != nil {
 		return nil, fmt.Errorf("invalid state: %w", err)

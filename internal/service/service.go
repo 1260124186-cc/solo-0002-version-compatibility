@@ -20,12 +20,12 @@ func New(repo *repository.Repository, maxSteps int) *Service {
 	return &Service{repo: repo, solver: resolution.Solver{MaxSteps: maxSteps, MaxNodes: 128}}
 }
 
-func freshID() (string, error) {
+func freshID(prefix string) (string, error) {
 	var data [16]byte
 	if _, err := rand.Read(data[:]); err != nil {
 		return "", err
 	}
-	return "plan-" + hex.EncodeToString(data[:]), nil
+	return prefix + hex.EncodeToString(data[:]), nil
 }
 
 func now() time.Time { return time.Now().UTC() }
