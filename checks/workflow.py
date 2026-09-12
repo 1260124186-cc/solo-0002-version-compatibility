@@ -130,7 +130,9 @@ def catalog(api):
     require(corrected["withdrawal_reason_corrections"][0]["event_sequence"] == correction_event["sequence"], "release correction does not identify correction event")
     api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdraw",
                 {"reason": "重复撤回"}, 409)
-    api.request("POST", "/api/v1/components/atlas-core/releases/2.0.0/withdrawal-reason-corrections",
+    component(api, "correction-check")
+    release(api, "correction-check", "1.0.0")
+    api.request("POST", "/api/v1/components/correction-check/releases/1.0.0/withdrawal-reason-corrections",
                 {"reason": "更正未撤回版本"}, 409)
     api.request("POST", "/api/v1/components/atlas-core/releases/1.0.0/withdrawal-reason-corrections",
                 {"reason": "   "}, 400)
@@ -142,7 +144,7 @@ def catalog(api):
     require(result["items"][0]["withdrawal_reason"] == "发现兼容性回归", "original withdrawal reason lost after restart")
     require(result["items"][0]["withdrawal_reason_corrections"][0]["corrects_sequence"] == result["items"][0]["withdrawal_event_sequence"], "durable correction points to wrong withdrawal")
     events = api.request("GET", "/api/v1/events")["items"]
-    require([event["action"] for event in events] == ["created", "added", "withdrawn", "withdrawal_reason_corrected"], "failed writes altered events")
+    require([event["action"] for event in events] == ["created", "added", "withdrawn", "withdrawal_reason_corrected", "created", "added"], "failed writes altered events")
     require(events[2]["reason"] == "发现兼容性回归" and events[3]["reason"] == "更正：发现与渲染组件的兼容性回归" and events[3]["corrects_event_sequence"] == events[2]["sequence"], "events lost withdrawal reasons")
 
 

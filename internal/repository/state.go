@@ -56,11 +56,12 @@ func (s *State) Record(kind, id, action string, at time.Time) {
 	s.RecordEvent(Event{Kind: kind, EntityID: id, Action: action, At: at})
 }
 
-func (s *State) RecordEvent(event Event) {
+func (s *State) RecordEvent(event Event) Event {
 	s.Revision++
 	event.Sequence = s.Revision
 	s.Events = append(s.Events, event)
 	if len(s.Events) > 10000 {
 		s.Events = s.Events[len(s.Events)-10000:]
 	}
+	return event
 }

@@ -133,7 +133,7 @@ func (s *Service) WithdrawRelease(ctx context.Context, id, version string, input
 			Reason:   input.Reason,
 		}
 		state.Catalog.Revision++
-		state.RecordEvent(event)
+		event = state.RecordEvent(event)
 		release.State = domain.Withdrawn
 		release.WithdrawnAt = &at
 		release.WithdrawalReason = input.Reason
@@ -168,7 +168,7 @@ func (s *Service) CorrectWithdrawalReason(ctx context.Context, id, version strin
 			CorrectsEventSequence: release.WithdrawalEventSequence,
 		}
 		state.Catalog.Revision++
-		state.RecordEvent(event)
+		event = state.RecordEvent(event)
 		release.WithdrawalReasonCorrections = append(release.WithdrawalReasonCorrections, domain.WithdrawalReasonCorrection{
 			Reason:           input.Reason,
 			At:               at,
