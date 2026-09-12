@@ -137,6 +137,36 @@ def resolve(api):
     require(len(result["resolved"]) == 2 and len(result["edges"]) == 2, "compatible dependency cycle failed")
 
 
+def assert_scheme_one_migration(api):
+    api.stop()
+    state_path = api.directory / "state" / "state.json"
+    state = json.loads(state_path.read_text())
+    del state["root_timelines"]
+    for plan in state["plans"].values():
+        plan.pop("root_changes", None)
+    state["schema"] = 1
+    state_path.write_text(json.dumps(state, separators=(",", ":"), ensure_ascii=False))
+    api.start()
+    migrated = api.request("GET", "/api/v1/environments/integration/root-timeline")
+    require(migrated["total"] == 1, "legacy state must seed exactly one current-state timeline entry")
+    entry = migrated["items"][0]
+    require(entry["type"] == "bootstrap" and entry["event_sequence"] == 0, "migration fabricated prior timeline history")
+    require(entry["after"] == {"render-engine": "*"}, "bootstrap timeline did not capture the actual current roots")
+    require(entry["after_revision"] == 5, "bootstrap timeline lost the existing environment revision")
+    same_body = {"environment_id": "integration", "base_revision": 5, "roots": {"render-engine": "*"}, "reason": "迁移后重新应用相同根约束"}
+    same = api.request("POST", "/api/v1/plans", same_body, 201)
+    same_path = "/api/v1/plans/" + same["id"]
+    ready = api.request("POST", same_path + "/validate", {"revision": 1})
+    applied = api.request("POST", same_path + "/apply", {"revision": ready["revision"]})
+    require(applied["environment"]["revision"] == 6, "post-migration same-root application failed")
+    migrated = api.request("GET", "/api/v1/environments/integration/root-timeline")
+    require(migrated["total"] == 1, "same-root application after bootstrap extended the timeline")
+    api.stop()
+    state = json.loads(state_path.read_text())
+    require(state["schema"] == 2 and len(state["root_timelines"]["integration"]["entries"]) == 1, "schema 1 migration was not persisted")
+    api.start()
+
+
 def upgrade(api):
     populate(api)
     env = api.request("POST", "/api/v1/environments", {"id": "integration", "name": "集成环境", "roots": {"render-engine": "1.0.0"}}, 201)
@@ -168,6 +198,7 @@ def upgrade(api):
     stale = api.request("POST", "/api/v1/plans", stale_body, 201)
     stale_path = "/api/v1/plans/" + stale["id"]
     ready = api.request("POST", stale_path + "/validate", {"revision": 1})
+    release(api, "render-engine", "3.0.0", {"atlas-core": "^3.0.0"})
     release(api, "atlas-core", "3.0.0")
     api.request("POST", stale_path + "/apply", {"revision": ready["revision"]}, 409)
     require(api.request("GET", "/api/v1/environments/integration")["revision"] == 3, "stale plan mutated environment")
@@ -179,14 +210,27 @@ def upgrade(api):
     api.request("POST", other + "/validate", {"revision": 1}, 409)
     cancelled = api.request("POST", other + "/cancel", {"revision": 1})
     require(cancelled["state"] == "cancelled", "plan cancellation failed")
+    same_body = {"environment_id": "integration", "base_revision": 4, "roots": {"render-engine": "*"}, "reason": "重新应用完全相同的根约束"}
+    same = api.request("POST", "/api/v1/plans", same_body, 201)
+    same_path = "/api/v1/plans/" + same["id"]
+    same_ready = api.request("POST", same_path + "/validate", {"revision": 1})
+    require(same_ready["root_changes"] == [], "identical roots were reported as a root change")
+    same_applied = api.request("POST", same_path + "/apply", {"revision": same_ready["revision"]})
+    require(same_applied["environment"]["revision"] == 5, "same-root application failed")
+    timeline = api.request("GET", "/api/v1/environments/integration/root-timeline")
+    require(len(timeline["items"]) == 4, "same-root application incorrectly extended the root timeline")
+    first_event = timeline["items"][1]
+    linked = api.request("GET", f"/api/v1/events?after={first_event['event_sequence'] - 1}&limit=1")
+    require(first_event["event_sequence"] != 0 and linked["items"][0]["kind"] == "plan" and linked["items"][0]["entity_id"] == first_event["plan_id"], "root timeline is not linked to the atomic plan event")
+    assert_scheme_one_migration(api)
+
     api.request("POST", "/api/v1/components/atlas-core/releases/3.0.0/withdraw", {}, 409)
     api.stop()
     api.start()
     require(api.request("GET", path)["state"] == "applied", "applied state lost after restart")
-    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 4, "environment revision lost after restart")
+    require(api.request("GET", "/api/v1/environments/integration")["revision"] == 6, "environment revision lost after restart")
     timeline = api.request("GET", "/api/v1/environments/integration/root-timeline")
-    require(len(timeline["items"]) == 4, "root timeline lost after restart")
-    require(timeline["items"][1]["event_sequence"] != 0 and timeline["items"][1]["event_sequence"] == timeline["items"][2]["event_sequence"] - 1, "root timeline is not linked to atomic environment events")
+    require(len(timeline["items"]) == 1 and timeline["items"][0]["type"] == "bootstrap", "schema 1 bootstrap timeline lost after restart")
 
 
 def main():

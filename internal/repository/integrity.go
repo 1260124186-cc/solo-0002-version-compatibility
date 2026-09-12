@@ -176,8 +176,11 @@ func validateRootTimelines(s *State) error {
 			}
 		}
 
-		if timeline.Entries[len(timeline.Entries)-1].AfterRevision != env.Revision {
-			return fmt.Errorf("root timeline does not reach the current environment revision")
+		if timeline.Entries[len(timeline.Entries)-1].AfterRevision > env.Revision {
+			return fmt.Errorf("root timeline points beyond the current environment revision")
+		}
+		if !sameRequirements(timeline.Entries[len(timeline.Entries)-1].After, env.Roots) {
+			return fmt.Errorf("root timeline does not reach the current root requirements")
 		}
 	}
 	return nil
@@ -192,15 +195,15 @@ func validateTimelineEntryShape(s *State, environmentID string, entry domain.Roo
 		if entry.EventSequence != 0 {
 			return fmt.Errorf("bootstrap timeline entry cannot fabricate an event")
 		}
-		if err := validateRootChanges(nil, entry.After, entry.RootChanges); err != nil {
-			return err
+		if entry.RootChanges == nil || len(entry.RootChanges) != 0 {
+			return fmt.Errorf("bootstrap timeline entry must not fabricate root changes")
 		}
 
 	case domain.RootTimelineCreated:
 		if index != 0 || entry.PlanID != "" || entry.Reason != "" || entry.Before != nil || entry.BeforeRevision != 0 {
 			return fmt.Errorf("invalid creation timeline entry")
 		}
-		if err := validateLinkedTimelineEvent(s, environmentID, entry, "created", firstEventSequence); err != nil {
+		if err := validateLinkedTimelineEvent(s, environmentID, entry, "environment", "created", firstEventSequence); err != nil {
 			return err
 		}
 		if err := validateRootChanges(nil, entry.After, entry.RootChanges); err != nil {
@@ -211,7 +214,7 @@ func validateTimelineEntryShape(s *State, environmentID string, entry domain.Roo
 		if index == 0 || entry.PlanID == "" || entry.Reason == "" || entry.Before == nil {
 			return fmt.Errorf("invalid application timeline entry")
 		}
-		if err := validateLinkedTimelineEvent(s, environmentID, entry, "applied", firstEventSequence); err != nil {
+		if err := validateLinkedTimelineEvent(s, entry.PlanID, entry, "plan", "applied", firstEventSequence); err != nil {
 			return err
 		}
 		plan, ok := s.Plans[entry.PlanID]
@@ -234,7 +237,7 @@ func validateTimelineEntryShape(s *State, environmentID string, entry domain.Roo
 	return nil
 }
 
-func validateLinkedTimelineEvent(s *State, environmentID string, entry domain.RootTimelineEntry, action string, firstEventSequence uint64) error {
+func validateLinkedTimelineEvent(s *State, entityID string, entry domain.RootTimelineEntry, kind, action string, firstEventSequence uint64) error {
 	if entry.EventSequence == 0 || entry.EventSequence > s.Revision {
 		return fmt.Errorf("root timeline is not linked to an atomic state event")
 	}
@@ -249,11 +252,23 @@ func validateLinkedTimelineEvent(s *State, environmentID string, entry domain.Ro
 	}
 	event := s.Events[index]
 	if event.Sequence != entry.EventSequence ||
-		event.Kind != "environment" || event.EntityID != environmentID ||
+		event.Kind != kind || event.EntityID != entityID ||
 		event.Action != action || !event.At.Equal(entry.At) {
-		return fmt.Errorf("root timeline event does not match its environment write")
+		return fmt.Errorf("root timeline event does not match its atomic write")
 	}
 	return nil
+}
+
+func sameRequirements(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for id, constraint := range a {
+		if b[id] != constraint {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRootChanges(before, after map[string]string, changes []domain.Change) error {

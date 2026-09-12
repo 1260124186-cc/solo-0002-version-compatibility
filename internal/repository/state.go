@@ -16,13 +16,13 @@ type Event struct {
 }
 
 type State struct {
-	Schema        int                           `json:"schema"`
-	Revision      uint64                        `json:"revision"`
-	Catalog       domain.Catalog                `json:"catalog"`
-	Environments  map[string]domain.Environment `json:"environments"`
-	Plans         map[string]domain.Plan        `json:"plans"`
+	Schema        int                            `json:"schema"`
+	Revision      uint64                         `json:"revision"`
+	Catalog       domain.Catalog                 `json:"catalog"`
+	Environments  map[string]domain.Environment  `json:"environments"`
+	Plans         map[string]domain.Plan         `json:"plans"`
 	RootTimelines map[string]domain.RootTimeline `json:"root_timelines"`
-	Events        []Event                       `json:"events"`
+	Events        []Event                        `json:"events"`
 }
 
 const CurrentSchema = 2

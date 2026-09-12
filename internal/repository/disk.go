@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"solo-0002-version-compatibility/internal/domain"
 )
 
 const maxStateBytes = 64 << 20

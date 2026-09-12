@@ -67,7 +67,7 @@ func (s *Service) ApplyPlan(ctx context.Context, id string, revision uint64) (Ap
 			})
 			state.RootTimelines[env.ID] = timeline
 		}
-		state.Record("environment", env.ID, "applied", at)
+		state.Record("plan", id, "applied", at)
 		result = AppliedResult{Plan: plan, Environment: env}
 		return nil
 	})
